@@ -18,11 +18,29 @@ Source of truth for the client side: `continuous-release/toolkit` `src/release.r
 
 ## Implemented endpoints (Full unless noted)
 
+### Users
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/user` | Full | Resolves from bearer token; defaults to `octocat`. |
+| GET | `/users/{username}` | Full | Synthetic if unknown. |
+
+### Organizations
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/orgs/{org}` | Full | Synthetic if unknown. |
+
 ### Repository
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
 | GET | `/repos/{owner}/{repo}` | Full | Synthetic metadata (name, full_name, owner, default_branch). |
+
+### Pagination
+
+List endpoints (`/releases`, `/commits`, `/issues`) accept `page` and `per_page`
+query params and return a sliced page. `Link` headers are not yet emitted.
 
 ### Releases
 
