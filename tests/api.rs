@@ -1,4 +1,4 @@
-use fake_github::FakeGitHub;
+use fake_github::{FakeGitHub, User};
 use reqwest::blocking::Client;
 use serde_json::json;
 
@@ -599,5 +599,63 @@ fn issue_comments_on_missing_issue_returns_404() {
         .send()
         .unwrap();
     assert_eq!(post.status().as_u16(), 404);
+    fake.stop();
+}
+
+#[test]
+fn get_authenticated_user_defaults_to_octocat() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/user")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().unwrap();
+    assert_eq!(body["login"], "octocat");
+    fake.stop();
+}
+
+#[test]
+fn get_user_by_username() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/users/alice")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().unwrap();
+    assert_eq!(body["login"], "alice");
+    fake.stop();
+}
+
+#[test]
+fn get_org() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/orgs/continuous-release")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().unwrap();
+    assert_eq!(body["login"], "continuous-release");
+    fake.stop();
+}
+
+#[test]
+fn pagination_slices_issues() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    for i in 0..5 {
+        client().post(format!("{url}/repos/o/r/issues")).json(&json!({"title": format!("issue {i}")})).send().unwrap();
+    }
+    let resp = client().get(format!("{url}/repos/o/r/issues?per_page=2&page=2")).send().unwrap();
+    let issues: Vec<serde_json::Value> = resp.json().unwrap();
+    assert_eq!(issues.len(), 2);
+    fake.stop();
+}
+
+#[test]
+fn authenticated_user_resolves_from_token() {
+    let mut fake = FakeGitHub::new();
+    fake.add_user(User { login: "alice".into(), id: 42, name: Some("Alice".into()), email: None, avatar_url: None }, Some("secret-token"));
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/user")).header("Authorization", "Bearer secret-token").send().unwrap();
+    let body: serde_json::Value = resp.json().unwrap();
+    assert_eq!(body["login"], "alice");
+    assert_eq!(body["id"], 42);
     fake.stop();
 }
