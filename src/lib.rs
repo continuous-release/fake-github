@@ -232,6 +232,7 @@ struct FakeWorkflowRun {
     id: u64,
     name: String,
     workflow_id: u64,
+    workflow_ref: String,
     head_sha: String,
     head_branch: String,
     status: String,
@@ -1619,7 +1620,8 @@ fn handle_request(
     // Workflow dispatch: POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches
     if segments.len() == 7 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "workflows" && segments[6] == "dispatches" && method == "POST" {
         let key = repo_key.clone().unwrap();
-        let workflow_id: u64 = segments[5].parse().unwrap_or(0);
+        let workflow_ref = segments[5].clone();
+        let workflow_id: u64 = workflow_ref.parse().unwrap_or(0);
         let body = parse_json_body(&body)?;
         let ref_name = body.get("ref").and_then(Value::as_str).unwrap_or("main").to_string();
         let mut state = state.lock().expect("fake state poisoned");
@@ -1627,8 +1629,8 @@ fn handle_request(
         let rs = state.repos.entry(key).or_default();
         let run_number = rs.next_workflow_run_number + 1;
         rs.next_workflow_run_number = run_number;
-        let workflow_name = rs.workflows.iter().find(|w| w.id == workflow_id).map(|w| w.name.clone()).unwrap_or_else(|| "workflow".to_string());
-        rs.workflow_runs.push(FakeWorkflowRun { id, name: workflow_name, workflow_id, head_sha: "0000000000000000000000000000000000000000".to_string(), head_branch: ref_name, status: "queued".to_string(), conclusion: None, event: "workflow_dispatch".to_string(), run_number });
+        let workflow_name = rs.workflows.iter().find(|w| w.id == workflow_id || w.path == workflow_ref || w.name == workflow_ref).map(|w| w.name.clone()).unwrap_or_else(|| workflow_ref.clone());
+        rs.workflow_runs.push(FakeWorkflowRun { id, name: workflow_name, workflow_id, workflow_ref: workflow_ref.clone(), head_sha: "0000000000000000000000000000000000000000".to_string(), head_branch: ref_name, status: "queued".to_string(), conclusion: None, event: "workflow_dispatch".to_string(), run_number });
         drop(state);
         return send(request, 204, None);
     }
@@ -1968,7 +1970,7 @@ fn handle_request(
         let state = state.lock().expect("fake state poisoned");
         let runs: Vec<Value> = state.repos.get(&key).map(|rs| {
             rs.workflow_runs.iter()
-                .filter(|r| r.workflow_id.to_string() == *workflow || workflow == "all" || r.name == *workflow)
+                .filter(|r| r.workflow_ref == *workflow || r.workflow_id.to_string() == *workflow || workflow == "all" || r.name == *workflow)
                 .map(|r| json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "head_sha": r.head_sha, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number, "html_url": format!("http://localhost/runs/{}", r.id)}))
                 .collect()
         }).unwrap_or_default();
