@@ -837,3 +837,151 @@ fn save_and_load_state_round_trips() {
     assert_eq!(fake2.list_issues()[0].title, "persisted");
     let _ = std::fs::remove_file(&tmp);
 }
+
+#[test]
+fn labels_crud() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client().post(format!("{url}/repos/o/r/labels")).json(&json!({"name": "bug", "color": "ff0000", "description": "a bug"})).send().unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let got = client().get(format!("{url}/repos/o/r/labels/bug")).send().unwrap();
+    assert_eq!(got.status().as_u16(), 200);
+    let list = client().get(format!("{url}/repos/o/r/labels")).send().unwrap();
+    let labels: Vec<serde_json::Value> = list.json().unwrap();
+    assert_eq!(labels.len(), 1);
+    let del = client().delete(format!("{url}/repos/o/r/labels/bug")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn milestones_crud() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client().post(format!("{url}/repos/o/r/milestones")).json(&json!({"title": "v1", "description": "first"})).send().unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let m: serde_json::Value = created.json().unwrap();
+    let num = m["number"].as_u64().unwrap();
+    let got = client().get(format!("{url}/repos/o/r/milestones/{num}")).send().unwrap();
+    assert_eq!(got.status().as_u16(), 200);
+    let updated = client().patch(format!("{url}/repos/o/r/milestones/{num}")).json(&json!({"state": "closed"})).send().unwrap();
+    assert_eq!(updated.status().as_u16(), 200);
+    let del = client().delete(format!("{url}/repos/o/r/milestones/{num}")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn commit_status_create_and_combined() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().post(format!("{url}/repos/o/r/statuses/abc123")).json(&json!({"state": "success", "context": "ci", "description": "ok"})).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 201);
+    let list = client().get(format!("{url}/repos/o/r/commits/abc123/statuses")).send().unwrap();
+    let statuses: Vec<serde_json::Value> = list.json().unwrap();
+    assert_eq!(statuses.len(), 1);
+    let combined = client().get(format!("{url}/repos/o/r/commits/abc123/status")).send().unwrap();
+    let body: serde_json::Value = combined.json().unwrap();
+    assert_eq!(body["state"], "success");
+    fake.stop();
+}
+
+#[test]
+fn webhook_create_list_delete() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client().post(format!("{url}/repos/o/r/hooks")).json(&json!({"config": {"url": "http://example.com/hook"}, "events": ["push"], "active": true})).send().unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let h: serde_json::Value = created.json().unwrap();
+    let id = h["id"].as_u64().unwrap();
+    let list = client().get(format!("{url}/repos/o/r/hooks")).send().unwrap();
+    let hooks: Vec<serde_json::Value> = list.json().unwrap();
+    assert_eq!(hooks.len(), 1);
+    let del = client().delete(format!("{url}/repos/o/r/hooks/{id}")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn check_run_create_and_list() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client().post(format!("{url}/repos/o/r/check-runs")).json(&json!({"name": "build", "head_sha": "abc", "status": "completed", "conclusion": "success"})).send().unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let list = client().get(format!("{url}/repos/o/r/commits/abc/check-runs")).send().unwrap();
+    let body: serde_json::Value = list.json().unwrap();
+    assert_eq!(body["total_count"], 1);
+    fake.stop();
+}
+
+#[test]
+fn deployment_create_and_list() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client().post(format!("{url}/repos/o/r/deployments")).json(&json!({"sha": "abc", "ref": "main", "environment": "prod"})).send().unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let list = client().get(format!("{url}/repos/o/r/deployments")).send().unwrap();
+    let deps: Vec<serde_json::Value> = list.json().unwrap();
+    assert_eq!(deps.len(), 1);
+    fake.stop();
+}
+
+#[test]
+fn ruleset_crud() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client().post(format!("{url}/repos/o/r/rulesets")).json(&json!({"name": "protect", "target": "branch", "enforcement": "active", "conditions": {}, "rules": []})).send().unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let r: serde_json::Value = created.json().unwrap();
+    let id = r["id"].as_u64().unwrap();
+    let got = client().get(format!("{url}/repos/o/r/rulesets/{id}")).send().unwrap();
+    assert_eq!(got.status().as_u16(), 200);
+    let del = client().delete(format!("{url}/repos/o/r/rulesets/{id}")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn branch_protection_round_trip() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let put = client().put(format!("{url}/repos/o/r/branches/main/protection")).json(&json!({"required_status_checks": {"contexts": ["ci"]}, "enforce_admins": true, "required_pull_request_reviews": {}})).send().unwrap();
+    assert_eq!(put.status().as_u16(), 200);
+    let got = client().get(format!("{url}/repos/o/r/branches/main/protection")).send().unwrap();
+    assert_eq!(got.status().as_u16(), 200);
+    let del = client().delete(format!("{url}/repos/o/r/branches/main/protection")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn graphql_endpoint() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().post(format!("{url}/graphql")).json(&json!({"query": "{ viewer { login } }"})).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().unwrap();
+    assert!(body.get("data").is_some());
+    fake.stop();
+}
+
+#[test]
+fn rate_limit_and_meta() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    assert_eq!(client().get(format!("{url}/rate_limit")).send().unwrap().status().as_u16(), 200);
+    assert_eq!(client().get(format!("{url}/meta")).send().unwrap().status().as_u16(), 200);
+    assert_eq!(client().get(format!("{url}/octocat")).send().unwrap().status().as_u16(), 200);
+    fake.stop();
+}
+
+#[test]
+fn events_recorded_on_issue_create() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    client().post(format!("{url}/repos/o/r/issues")).json(&json!({"title": "bug"})).send().unwrap();
+    let events = client().get(format!("{url}/repos/o/r/events")).send().unwrap();
+    let ev: Vec<serde_json::Value> = events.json().unwrap();
+    assert!(!ev.is_empty());
+    fake.stop();
+}
