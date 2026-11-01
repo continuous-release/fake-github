@@ -1,6 +1,6 @@
 [package]
 name = "fake-github"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2021"
 description = "A small in-memory GitHub API server used as a test double for the continuous-release toolkit."
 license = "MIT"

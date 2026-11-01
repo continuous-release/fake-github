@@ -1626,12 +1626,20 @@ fn handle_request(
         let ref_name = body.get("ref").and_then(Value::as_str).unwrap_or("main").to_string();
         let mut state = state.lock().expect("fake state poisoned");
         let id = state.id();
-        let rs = state.repos.entry(key).or_default();
+        let rs = state.repos.entry(key.clone()).or_default();
         let run_number = rs.next_workflow_run_number + 1;
         rs.next_workflow_run_number = run_number;
         let workflow_name = rs.workflows.iter().find(|w| w.id == workflow_id || w.path == workflow_ref || w.name == workflow_ref).map(|w| w.name.clone()).unwrap_or_else(|| workflow_ref.clone());
-        rs.workflow_runs.push(FakeWorkflowRun { id, name: workflow_name, workflow_id, workflow_ref: workflow_ref.clone(), head_sha: "0000000000000000000000000000000000000000".to_string(), head_branch: ref_name, status: "queued".to_string(), conclusion: None, event: "workflow_dispatch".to_string(), run_number });
+        rs.workflow_runs.push(FakeWorkflowRun { id, name: workflow_name, workflow_id, workflow_ref: workflow_ref.clone(), head_sha: "0000000000000000000000000000000000000000".to_string(), head_branch: ref_name.clone(), status: "queued".to_string(), conclusion: None, event: "workflow_dispatch".to_string(), run_number });
+        let hooks: Vec<(String, Vec<String>)> = state.repos.get(&key).map(|r| r.webhooks.iter().map(|h| (h.url.clone(), h.events.clone())).collect()).unwrap_or_default();
         drop(state);
+        let event = json!({"type": "WorkflowRunEvent", "payload": {"action": "requested", "workflow_run": {"id": id, "head_branch": ref_name}}});
+        for (url, events) in hooks {
+            if events.is_empty() || events.iter().any(|e| e == "workflow_run" || e == "*") {
+                let payload = event.clone();
+                std::thread::spawn(move || deliver_webhook(&url, &payload));
+            }
+        }
         return send(request, 204, None);
     }
     // List workflow runs
@@ -1930,7 +1938,11 @@ fn handle_request(
             }
         }
         drop(state);
-        return send(request, 200, Some(Value::Array(refs)));
+        let (page_items, link) = paginate(&refs, &url);
+        if let Some(link) = link {
+            return send_with(request, 200, Some(Value::Array(page_items)), &[("Link", &link)]);
+        }
+        return send(request, 200, Some(Value::Array(page_items)));
     }
     // List git refs by namespace: GET /repos/{owner}/{repo}/git/refs/tags  or /heads
     if segments.len() == 6 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "refs" && method == "GET" {
@@ -1950,7 +1962,11 @@ fn handle_request(
             }
         }
         drop(state);
-        return send(request, 200, Some(Value::Array(refs)));
+        let (page_items, link) = paginate(&refs, &url);
+        if let Some(link) = link {
+            return send_with(request, 200, Some(Value::Array(page_items)), &[("Link", &link)]);
+        }
+        return send(request, 200, Some(Value::Array(page_items)));
     }
     // Delete branch ref: DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}
     if segments.len() == 7 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "refs" && segments[5] == "heads" && method == "DELETE" {
