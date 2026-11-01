@@ -821,3 +821,19 @@ fn create_pull_comment() {
     assert_eq!(comments[0]["body"], "nit");
     fake.stop();
 }
+
+#[test]
+fn save_and_load_state_round_trips() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    client().post(format!("{url}/repos/o/r/issues")).json(&json!({"title": "persisted"})).send().unwrap();
+    let tmp = std::env::temp_dir().join("fake-github-state.json");
+    fake.save_state(&tmp).unwrap();
+    fake.stop();
+
+    let mut fake2 = FakeGitHub::new();
+    fake2.load_state(&tmp).unwrap();
+    assert_eq!(fake2.list_issues().len(), 1);
+    assert_eq!(fake2.list_issues()[0].title, "persisted");
+    let _ = std::fs::remove_file(&tmp);
+}

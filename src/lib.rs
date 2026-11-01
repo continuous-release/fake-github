@@ -10,7 +10,7 @@ use tiny_http::{Header, Request, Response, Server, StatusCode};
 use url::Url;
 
 /// A user in the fake GitHub.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub login: String,
     pub id: u64,
@@ -20,7 +20,7 @@ pub struct User {
 }
 
 /// An organization in the fake GitHub.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Organization {
     pub login: String,
     pub id: u64,
@@ -29,7 +29,7 @@ pub struct Organization {
 }
 
 /// A repository in the fake GitHub.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Repository {
     pub id: u64,
     pub name: String,
@@ -41,13 +41,13 @@ pub struct Repository {
 }
 
 /// A release asset reported by the fake GitHub server.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ReleaseAsset {
     pub name: String,
 }
 
 /// A release reported by the fake GitHub server.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Release {
     pub tag_name: String,
     pub prerelease: bool,
@@ -56,7 +56,7 @@ pub struct Release {
 }
 
 /// A GitHub issue reported by the fake server.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Issue {
     pub number: u64,
     pub id: u64,
@@ -68,15 +68,32 @@ pub struct Issue {
 }
 
 /// A comment on a fake issue.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct IssueComment {
     pub id: u64,
     pub body: String,
     pub user: String,
 }
 
+/// A label in the fake GitHub.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Label {
+    pub name: String,
+    pub color: String,
+    pub description: Option<String>,
+}
+
+/// A milestone in the fake GitHub.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Milestone {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub description: Option<String>,
+}
+
 /// A pull request in the fake GitHub.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct PullRequest {
     pub number: u64,
     pub id: u64,
@@ -90,14 +107,14 @@ pub struct PullRequest {
     pub merged: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeAsset {
     id: u64,
     name: String,
     bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeRelease {
     id: u64,
     tag_name: String,
@@ -108,14 +125,14 @@ struct FakeRelease {
     assets: Vec<FakeAsset>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeCommit {
     sha: String,
     message: String,
     parents: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeIssue {
     id: u64,
     number: u64,
@@ -126,14 +143,30 @@ struct FakeIssue {
     labels: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeIssueComment {
     id: u64,
     body: String,
     user: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeLabel {
+    name: String,
+    color: String,
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeMilestone {
+    id: u64,
+    number: u64,
+    title: String,
+    state: String,
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakePull {
     id: u64,
     number: u64,
@@ -148,7 +181,7 @@ struct FakePull {
     mergeable: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakePullComment {
     id: u64,
     body: String,
@@ -156,7 +189,7 @@ struct FakePullComment {
     path: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakePullReview {
     id: u64,
     body: Option<String>,
@@ -164,7 +197,7 @@ struct FakePullReview {
     user: String,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct RepoState {
     tags: HashMap<String, String>,
     commits: HashMap<String, FakeCommit>,
@@ -174,17 +207,20 @@ struct RepoState {
     next_issue_number: u64,
     branches: Vec<String>,
     contents: HashMap<String, Vec<u8>>,
+    labels: Vec<FakeLabel>,
+    milestones: Vec<FakeMilestone>,
+    next_milestone_number: u64,
     pulls: Vec<FakePull>,
     pull_comments: HashMap<u64, Vec<FakePullComment>>,
     pull_reviews: HashMap<u64, Vec<FakePullReview>>,
     next_pull_number: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct FakeState {
     users: HashMap<String, User>,
     orgs: HashMap<String, Organization>,
-    repos: HashMap<(String, String), RepoState>,
+    repos: HashMap<String, RepoState>,
     tokens: HashMap<String, String>, // token -> user login
     next_id: u64,
 }
@@ -195,21 +231,22 @@ impl FakeState {
         self.next_id
     }
 
+    fn repo_key(owner: &str, name: &str) -> String {
+        format!("{owner}/{name}")
+    }
     fn repo(&mut self, owner: &str, name: &str) -> &mut RepoState {
-        let rs = self.repos
-            .entry((owner.to_string(), name.to_string()))
-            .or_default();
+        let key = Self::repo_key(owner, name);
+        let rs = self.repos.entry(key).or_default();
         if rs.branches.is_empty() {
             rs.branches.push("main".to_string());
         }
         rs
     }
 
-    fn ensure_repo(&mut self, owner: &str, name: &str) -> (String, String) {
-        let key = (owner.to_string(), name.to_string());
+    fn ensure_repo(&mut self, owner: &str, name: &str) -> String {
+        let key = format!("{owner}/{name}");
         if !self.repos.contains_key(&key) {
             let id = self.id();
-            // store repo metadata? We keep a separate list? For now metadata is synthetic.
             let _ = id;
         }
         key
@@ -220,9 +257,9 @@ impl FakeState {
     }
 }
 
-fn repo_key_from_segments(segments: &[String]) -> Option<(String, String)> {
+fn repo_key_from_segments(segments: &[String]) -> Option<String> {
     if segments.len() >= 3 && segments[0] == "repos" {
-        Some((segments[1].clone(), segments[2].clone()))
+        Some(format!("{}/{}", segments[1], segments[2]))
     } else {
         None
     }
@@ -295,6 +332,24 @@ impl FakeGitHub {
         &self.url
     }
 
+    /// Save the current state to a JSON file.
+    pub fn save_state(&self, path: &std::path::Path) -> Result<()> {
+        let state = self.state.lock().expect("fake state poisoned");
+        let text = serde_json::to_string_pretty(&*state).context("serializing state")?;
+        drop(state);
+        std::fs::write(path, text).context("writing state file")?;
+        Ok(())
+    }
+
+    /// Replace the current state from a JSON file.
+    pub fn load_state(&self, path: &std::path::Path) -> Result<()> {
+        let text = std::fs::read_to_string(path).context("reading state file")?;
+        let parsed: FakeState = serde_json::from_str(&text).context("parsing state file")?;
+        let mut state = self.state.lock().expect("fake state poisoned");
+        *state = parsed;
+        Ok(())
+    }
+
     // --- user / org management ---
 
     pub fn add_user(&self, user: User, token: Option<&str>) {
@@ -317,13 +372,13 @@ impl FakeGitHub {
 
     // --- default-repo helpers (backward compat) ---
 
-    fn default_key(&self) -> (String, String) {
-        (self.default_owner.clone(), self.default_repo.clone())
+    fn default_key(&self) -> String {
+        format!("{}/{}", self.default_owner, self.default_repo)
     }
 
     pub fn list_releases(&self) -> Vec<Release> {
         let state = self.state.lock().expect("fake state poisoned");
-        let key = (self.default_owner.clone(), self.default_repo.clone());
+        let key = format!("{}/{}", self.default_owner, self.default_repo);
         state
             .repos
             .get(&key)
@@ -349,7 +404,7 @@ impl FakeGitHub {
 
     pub fn list_tags(&self) -> Vec<String> {
         let state = self.state.lock().expect("fake state poisoned");
-        let key = (self.default_owner.clone(), self.default_repo.clone());
+        let key = format!("{}/{}", self.default_owner, self.default_repo);
         state
             .repos
             .get(&key)
@@ -359,7 +414,7 @@ impl FakeGitHub {
 
     pub fn seed_tag(&self, tag: &str, sha: &str) {
         let mut state = self.state.lock().expect("fake state poisoned");
-        let key = (self.default_owner.clone(), self.default_repo.clone());
+        let key = format!("{}/{}", self.default_owner, self.default_repo);
         let rs = state.repos.entry(key).or_default();
         rs.tags.insert(tag.to_string(), sha.to_string());
         rs.commits
@@ -373,7 +428,7 @@ impl FakeGitHub {
 
     pub fn list_issues(&self) -> Vec<Issue> {
         let state = self.state.lock().expect("fake state poisoned");
-        let key = (self.default_owner.clone(), self.default_repo.clone());
+        let key = format!("{}/{}", self.default_owner, self.default_repo);
         state
             .repos
             .get(&key)
@@ -396,7 +451,7 @@ impl FakeGitHub {
 
     pub fn list_commits(&self) -> Vec<String> {
         let state = self.state.lock().expect("fake state poisoned");
-        let key = (self.default_owner.clone(), self.default_repo.clone());
+        let key = format!("{}/{}", self.default_owner, self.default_repo);
         state
             .repos
             .get(&key)
@@ -439,12 +494,30 @@ fn paginate<T: Clone>(items: &[T], url: &Url) -> (Vec<T>, Option<String>) {
     } else {
         Vec::new()
     };
-    // Link header omitted for simplicity; could be added.
-    let _ = (page, per_page);
-    (slice, None)
+    // Build a Link header (RFC 5988) when there is more than one page.
+    let total_pages = if total == 0 { 1 } else { (total + per_page - 1) / per_page };
+    if total_pages <= 1 {
+        return (slice, None);
+    }
+    let base = format!("{}?{}", url.path(), url.query().unwrap_or(""));
+    // strip existing page param crudely by rebuilding
+    let mut links = Vec::new();
+    if page > 1 {
+        links.push(format!("<{}?page={}&per_page={}>; rel=\"prev\"", base.split('?').next().unwrap(), page - 1, per_page));
+    }
+    if page < total_pages {
+        links.push(format!("<{}?page={}&per_page={}>; rel=\"next\"", base.split('?').next().unwrap(), page + 1, per_page));
+    }
+    links.push(format!("<{}?page=1&per_page={}>; rel=\"first\"", base.split('?').next().unwrap(), per_page));
+    links.push(format!("<{}?page={}&per_page={}>; rel=\"last\"", base.split('?').next().unwrap(), total_pages, per_page));
+    (slice, Some(links.join(", ")))
 }
 
 fn send(request: Request, status: u16, body: Option<Value>) -> Result<()> {
+    send_with(request, status, body, &[])
+}
+
+fn send_with(request: Request, status: u16, body: Option<Value>, extra: &[(&str, &str)]) -> Result<()> {
     let (text, is_json) = match body {
         Some(body) => (serde_json::to_string(&body)?, true),
         None => (String::new(), false),
@@ -455,6 +528,11 @@ fn send(request: Request, status: u16, body: Option<Value>) -> Result<()> {
             Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
                 .expect("valid header"),
         );
+    }
+    for (k, v) in extra {
+        if let Ok(h) = Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+            response = response.with_header(h);
+        }
     }
     request.respond(response)?;
     Ok(())
@@ -582,7 +660,7 @@ fn handle_request(
         let owner = &segments[1];
         let repo = &segments[2];
         let state = state.lock().expect("fake state poisoned");
-        let _ = state.repos.contains_key(&(owner.clone(), repo.clone()));
+        let _ = state.repos.contains_key(&format!("{owner}/{repo}"));
         drop(state);
         return send(
             request,
@@ -690,7 +768,10 @@ fn handle_request(
                 .map(|rs| rs.releases.iter().map(|r| release_json(r, base_url)).collect())
                 .unwrap_or_default();
             drop(state);
-            let (page_items, _) = paginate(&releases, &url);
+            let (page_items, link) = paginate(&releases, &url);
+            if let Some(link) = link {
+                return send_with(request, 200, Some(Value::Array(page_items)), &[("Link", &link)]);
+            }
             return send(request, 200, Some(Value::Array(page_items)));
         }
         if method == "POST" {
@@ -1133,6 +1214,117 @@ fn handle_request(
         return send(request, 201, Some(json!({"id": id, "body": text, "user": {"login": "octocat"}, "path": path})));
     }
 
+
+    // Labels list
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "labels" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let labels = state.repos.get(&key).map(|rs| rs.labels.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = labels.iter().map(|l| json!({"name": l.name, "color": l.color, "description": l.description})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Label create
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "labels" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let color = body.get("color").and_then(Value::as_str).unwrap_or("ededed").to_string();
+        let description = body.get("description").and_then(Value::as_str).map(|s| s.to_string());
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.entry(key).or_default();
+        rs.labels.push(FakeLabel { name: name.clone(), color: color.clone(), description: description.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"name": name, "color": color, "description": description})));
+    }
+    // Label get
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "labels" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let name = &segments[4];
+        let state = state.lock().expect("fake state poisoned");
+        let label = state.repos.get(&key).and_then(|rs| rs.labels.iter().find(|l| l.name == *name).cloned());
+        drop(state);
+        match label {
+            Some(l) => return send(request, 200, Some(json!({"name": l.name, "color": l.color, "description": l.description}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Label delete
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "labels" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let name = &segments[4];
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            rs.labels.retain(|l| l.name != *name);
+        }
+        drop(state);
+        return send(request, 204, None);
+    }
+
+    // Milestones list
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "milestones" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let ms = state.repos.get(&key).map(|rs| rs.milestones.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = ms.iter().map(|m| json!({"number": m.number, "title": m.title, "state": m.state, "description": m.description})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Milestone create
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "milestones" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let title = body.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+        let description = body.get("description").and_then(Value::as_str).map(|s| s.to_string());
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.entry(key).or_default();
+        rs.next_milestone_number += 1;
+        let number = rs.next_milestone_number;
+        rs.milestones.push(FakeMilestone { id, number, title: title.clone(), state: "open".to_string(), description: description.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"number": number, "title": title, "state": "open", "description": description})));
+    }
+    // Milestone get
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "milestones" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let m = state.repos.get(&key).and_then(|rs| rs.milestones.iter().find(|m| m.number == number).cloned());
+        drop(state);
+        match m {
+            Some(m) => return send(request, 200, Some(json!({"number": m.number, "title": m.title, "state": m.state, "description": m.description}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Milestone update
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "milestones" && method == "PATCH" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.get_mut(&key);
+        let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        let Some(m) = rs.milestones.iter_mut().find(|m| m.number == number) else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        if let Some(t) = body.get("title").and_then(Value::as_str) { m.title = t.to_string(); }
+        if let Some(st) = body.get("state").and_then(Value::as_str) { m.state = st.to_string(); }
+        if let Some(d) = body.get("description").and_then(Value::as_str) { m.description = Some(d.to_string()); }
+        let resp = json!({"number": m.number, "title": m.title, "state": m.state, "description": m.description});
+        drop(state);
+        return send(request, 200, Some(resp));
+    }
+    // Milestone delete
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "milestones" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            rs.milestones.retain(|m| m.number != number);
+        }
+        drop(state);
+        return send(request, 204, None);
+    }
+
     // Annotated tag lookup: always 404
     if segments.len() == 6
         && segments[0] == "repos"
@@ -1160,7 +1352,10 @@ fn handle_request(
             })
             .unwrap_or_default();
         drop(state);
-        let (page_items, _) = paginate(&commits, &url);
+        let (page_items, link) = paginate(&commits, &url);
+        if let Some(link) = link {
+            return send_with(request, 200, Some(Value::Array(page_items)), &[("Link", &link)]);
+        }
         return send(request, 200, Some(Value::Array(page_items)));
     }
     if segments.len() == 5 && segments[0] == "repos" && segments[3] == "commits" && method == "GET" {
@@ -1200,7 +1395,10 @@ fn handle_request(
             })
             .unwrap_or_default();
         drop(state);
-        let (page_items, _) = paginate(&issues, &url);
+        let (page_items, link) = paginate(&issues, &url);
+        if let Some(link) = link {
+            return send_with(request, 200, Some(Value::Array(page_items)), &[("Link", &link)]);
+        }
         return send(request, 200, Some(Value::Array(page_items)));
     }
     // Issue get
