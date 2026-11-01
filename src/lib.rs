@@ -1794,6 +1794,56 @@ fn handle_request(
         return send(request, 201, Some(json!({"id": id, "name": name, "target": target, "enforcement": enforcement, "conditions": conditions, "rules": rules})));
     }
 
+
+    // Events list (repo)
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "events" && method == "GET" {
+        return send(request, 200, Some(Value::Array(vec![])));
+    }
+    // Org events
+    if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "events" && method == "GET" {
+        return send(request, 200, Some(Value::Array(vec![])));
+    }
+    // User events
+    if segments.len() == 3 && segments[0] == "users" && segments[2] == "events" && method == "GET" {
+        return send(request, 200, Some(Value::Array(vec![])));
+    }
+    // Environments list
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "environments" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let _ = state.repos.get(&key);
+        drop(state);
+        return send(request, 200, Some(json!({"total_count": 0, "environments": []})));
+    }
+    // Create environment
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "environments" && method == "PUT" {
+        let body = parse_json_body(&body)?;
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("production").to_string();
+        return send(request, 200, Some(json!({"name": name, "protection_rules": []})));
+    }
+    // Git trees get
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "trees" && method == "GET" {
+        let sha = &segments[5];
+        return send(request, 200, Some(json!({"sha": sha, "tree": [], "truncated": false})));
+    }
+    // Git blobs get
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "blobs" && method == "GET" {
+        let sha = &segments[5];
+        return send(request, 200, Some(json!({"sha": sha, "content": "", "encoding": "base64", "size": 0})));
+    }
+    // Rate limit
+    if segments == ["rate_limit"] && method == "GET" {
+        return send(request, 200, Some(json!({"resources": {"core": {"limit": 5000, "remaining": 4999, "reset": 0}}})));
+    }
+    // Meta
+    if segments == ["meta"] && method == "GET" {
+        return send(request, 200, Some(json!({"verifiable_password_authentication": true})));
+    }
+    // Octocat
+    if segments == ["octocat"] && method == "GET" {
+        return send(request, 200, Some(json!({"message": "Emulated by fake-github"})));
+    }
+
     // Annotated tag lookup: always 404
     if segments.len() == 6
         && segments[0] == "repos"
