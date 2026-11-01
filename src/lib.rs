@@ -1638,7 +1638,7 @@ fn handle_request(
         let state = state.lock().expect("fake state poisoned");
         let runs = state.repos.get(&key).map(|rs| rs.workflow_runs.clone()).unwrap_or_default();
         drop(state);
-        let arr: Vec<Value> = runs.iter().map(|r| json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number})).collect();
+        let arr: Vec<Value> = runs.iter().map(|r| json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "head_sha": r.head_sha, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number, "html_url": format!("http://localhost/runs/{}", r.id)})).collect();
         return send(request, 200, Some(json!({"total_count": arr.len(), "workflow_runs": arr})));
     }
     // Get workflow run
@@ -1649,7 +1649,7 @@ fn handle_request(
         let run = state.repos.get(&key).and_then(|rs| rs.workflow_runs.iter().find(|r| r.id == run_id).cloned());
         drop(state);
         match run {
-            Some(r) => return send(request, 200, Some(json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number}))),
+            Some(r) => return send(request, 200, Some(json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "head_sha": r.head_sha, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number, "html_url": format!("http://localhost/runs/{}", r.id)}))),
             None => return send(request, 404, Some(json!({"message": "Not Found"}))),
         }
     }
@@ -1907,6 +1907,73 @@ fn handle_request(
             json!({})
         };
         return send(request, 200, Some(json!({"data": data})));
+    }
+
+
+    // List git refs (all): GET /repos/{owner}/{repo}/git/refs
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "refs" && method == "GET" {
+        // actually path is /git/refs not /refs; handled by git/refs below? This is placeholder no-op
+    }
+    // List git refs: GET /repos/{owner}/{repo}/git/refs
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "refs" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let mut refs = Vec::new();
+        if let Some(rs) = state.repos.get(&key) {
+            for (tag, sha) in &rs.tags {
+                refs.push(json!({"ref": format!("refs/tags/{tag}"), "object": {"sha": sha, "type": "commit"}}));
+            }
+            for branch in &rs.branches {
+                refs.push(json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": "0000000000000000000000000000000000000000", "type": "commit"}}));
+            }
+        }
+        drop(state);
+        return send(request, 200, Some(Value::Array(refs)));
+    }
+    // List git refs by namespace: GET /repos/{owner}/{repo}/git/refs/tags  or /heads
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "refs" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let ns = &segments[5];
+        let state = state.lock().expect("fake state poisoned");
+        let mut refs = Vec::new();
+        if let Some(rs) = state.repos.get(&key) {
+            if ns == "tags" {
+                for (tag, sha) in &rs.tags {
+                    refs.push(json!({"ref": format!("refs/tags/{tag}"), "object": {"sha": sha, "type": "commit"}}));
+                }
+            } else if ns == "heads" {
+                for branch in &rs.branches {
+                    refs.push(json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": "0000000000000000000000000000000000000000", "type": "commit"}}));
+                }
+            }
+        }
+        drop(state);
+        return send(request, 200, Some(Value::Array(refs)));
+    }
+    // Delete branch ref: DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}
+    if segments.len() == 7 && segments[0] == "repos" && segments[3] == "git" && segments[4] == "refs" && segments[5] == "heads" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let branch = &segments[6];
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            rs.branches.retain(|b| b != branch);
+        }
+        drop(state);
+        return send(request, 204, None);
+    }
+    // Workflow runs filtered by workflow: GET /repos/{owner}/{repo}/actions/workflows/{workflow}/runs
+    if segments.len() == 7 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "workflows" && segments[6] == "runs" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let workflow = &segments[5];
+        let state = state.lock().expect("fake state poisoned");
+        let runs: Vec<Value> = state.repos.get(&key).map(|rs| {
+            rs.workflow_runs.iter()
+                .filter(|r| r.workflow_id.to_string() == *workflow || workflow == "all" || r.name == *workflow)
+                .map(|r| json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "head_sha": r.head_sha, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number, "html_url": format!("http://localhost/runs/{}", r.id)}))
+                .collect()
+        }).unwrap_or_default();
+        drop(state);
+        return send(request, 200, Some(json!({"total_count": runs.len(), "workflow_runs": runs})));
     }
 
     // Annotated tag lookup: always 404
