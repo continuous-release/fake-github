@@ -25,6 +25,26 @@ pub struct Release {
     pub assets: Vec<ReleaseAsset>,
 }
 
+/// A GitHub issue reported by the fake server.
+#[derive(Clone, Debug, Default)]
+pub struct Issue {
+    pub number: u64,
+    pub id: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub state: String,
+    pub user: String,
+    pub labels: Vec<String>,
+}
+
+/// A comment on a fake issue.
+#[derive(Clone, Debug, Default)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: String,
+    pub user: String,
+}
+
 #[derive(Clone, Debug)]
 struct FakeAsset {
     id: u64,
@@ -43,11 +63,40 @@ struct FakeRelease {
     assets: Vec<FakeAsset>,
 }
 
+#[derive(Clone, Debug)]
+struct FakeCommit {
+    sha: String,
+    message: String,
+    parents: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct FakeIssue {
+    id: u64,
+    number: u64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    user: String,
+    labels: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct FakeIssueComment {
+    id: u64,
+    body: String,
+    user: String,
+}
+
 #[derive(Default)]
 struct FakeState {
     tags: HashMap<String, String>,
+    commits: HashMap<String, FakeCommit>,
     releases: Vec<FakeRelease>,
+    issues: Vec<FakeIssue>,
+    issue_comments: HashMap<u64, Vec<FakeIssueComment>>,
     next_id: u64,
+    next_issue_number: u64,
 }
 
 impl FakeState {
@@ -174,9 +223,39 @@ impl FakeGitHub {
         state.tags.keys().cloned().collect()
     }
 
+    pub fn list_issues(&self) -> Vec<Issue> {
+        let state = self.state.lock().expect("fake state poisoned");
+        state
+            .issues
+            .iter()
+            .map(|issue| Issue {
+                number: issue.number,
+                id: issue.id,
+                title: issue.title.clone(),
+                body: issue.body.clone(),
+                state: issue.state.clone(),
+                user: issue.user.clone(),
+                labels: issue.labels.clone(),
+            })
+            .collect()
+    }
+
+    pub fn list_commits(&self) -> Vec<String> {
+        let state = self.state.lock().expect("fake state poisoned");
+        state.commits.keys().cloned().collect()
+    }
+
     pub fn seed_tag(&self, tag: &str, sha: &str) {
         let mut state = self.state.lock().expect("fake state poisoned");
         state.tags.insert(tag.to_string(), sha.to_string());
+        state
+            .commits
+            .entry(sha.to_string())
+            .or_insert_with(|| FakeCommit {
+                sha: sha.to_string(),
+                message: format!("commit {sha}"),
+                parents: Vec::new(),
+            });
     }
 }
 
@@ -508,6 +587,217 @@ fn handle_request(
                 "object": { "sha": sha, "type": "commit" },
             })),
         );
+    }
+
+    // Repository metadata: GET /repos/{owner}/{repo}
+    if segments.len() == 3 && segments[0] == "repos" && method == "GET" {
+        let owner = &segments[1];
+        let repo = &segments[2];
+        return send(
+            request,
+            200,
+            Some(json!({
+                "id": 1,
+                "name": repo,
+                "full_name": format!("{owner}/{repo}"),
+                "owner": { "login": owner },
+                "private": false,
+                "html_url": format!("https://github.com/{owner}/{repo}"),
+                "default_branch": "main"
+            })),
+        );
+    }
+
+    // Commits: GET /repos/{owner}/{repo}/commits
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "commits" && method == "GET" {
+        let state = state.lock().expect("fake state poisoned");
+        let commits: Vec<Value> = state
+            .commits
+            .values()
+            .map(|commit| json!({
+                "sha": commit.sha,
+                "commit": { "message": commit.message },
+                "parents": commit.parents.iter().map(|p| json!({"sha": p})).collect::<Vec<_>>()
+            }))
+            .collect();
+        drop(state);
+        return send(request, 200, Some(Value::Array(commits)));
+    }
+
+    // Commit: GET /repos/{owner}/{repo}/commits/{sha}
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "commits" && method == "GET" {
+        let sha = &segments[4];
+        let state = state.lock().expect("fake state poisoned");
+        let commit = state.commits.get(sha).cloned();
+        drop(state);
+        match commit {
+            Some(commit) => {
+                return send(
+                    request,
+                    200,
+                    Some(json!({
+                        "sha": commit.sha,
+                        "commit": { "message": commit.message },
+                        "parents": commit.parents.iter().map(|p| json!({"sha": p})).collect::<Vec<_>>()
+                    })),
+                );
+            }
+            None => {
+                return send(request, 404, Some(json!({ "message": "Not Found" })));
+            }
+        }
+    }
+
+    // Issues: GET /repos/{owner}/{repo}/issues
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "issues" && method == "GET" {
+        let state = state.lock().expect("fake state poisoned");
+        let issues: Vec<Value> = state
+            .issues
+            .iter()
+            .map(|issue| json!({
+                "id": issue.id,
+                "number": issue.number,
+                "title": issue.title,
+                "body": issue.body,
+                "state": issue.state,
+                "user": { "login": issue.user },
+                "labels": issue.labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()
+            }))
+            .collect();
+        drop(state);
+        return send(request, 200, Some(Value::Array(issues)));
+    }
+
+    // Issue: GET /repos/{owner}/{repo}/issues/{number}
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "issues" && method == "GET" {
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let issue = state.issues.iter().find(|i| i.number == number).cloned();
+        drop(state);
+        match issue {
+            Some(issue) => {
+                return send(
+                    request,
+                    200,
+                    Some(json!({
+                        "id": issue.id,
+                        "number": issue.number,
+                        "title": issue.title,
+                        "body": issue.body,
+                        "state": issue.state,
+                        "user": { "login": issue.user },
+                        "labels": issue.labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()
+                    })),
+                );
+            }
+            None => {
+                return send(request, 404, Some(json!({ "message": "Not Found" })));
+            }
+        }
+    }
+
+    // Issue create: POST /repos/{owner}/{repo}/issues
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "issues" && method == "POST" {
+        let body = parse_json_body(&body)?;
+        let title = body.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+        let issue_body = body.get("body").and_then(Value::as_str).map(|s| s.to_string());
+        let labels: Vec<String> = body
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect())
+            .unwrap_or_default();
+        let mut state = state.lock().expect("fake state poisoned");
+        state.next_issue_number += 1;
+        let number = state.next_issue_number;
+        let id = state.id();
+        let issue = FakeIssue {
+            id,
+            number,
+            title: title.clone(),
+            body: issue_body.clone(),
+            state: "open".to_string(),
+            user: "octocat".to_string(),
+            labels: labels.clone(),
+        };
+        let response = json!({
+            "id": id,
+            "number": number,
+            "title": title,
+            "body": issue_body,
+            "state": "open",
+            "user": { "login": "octocat" },
+            "labels": labels.iter().map(|l: &String| json!({"name": l})).collect::<Vec<_>>()
+        });
+        state.issues.push(issue);
+        drop(state);
+        return send(request, 201, Some(response));
+    }
+
+    // Issue update: PATCH /repos/{owner}/{repo}/issues/{number}
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "issues" && method == "PATCH" {
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let mut state = state.lock().expect("fake state poisoned");
+        let Some(issue) = state.issues.iter_mut().find(|i| i.number == number) else {
+            drop(state);
+            return send(request, 404, Some(json!({ "message": "Not Found" })));
+        };
+        if let Some(title) = body.get("title").and_then(Value::as_str) {
+            issue.title = title.to_string();
+        }
+        if let Some(value) = body.get("body").and_then(Value::as_str) {
+            issue.body = Some(value.to_string());
+        }
+        if let Some(value) = body.get("state").and_then(Value::as_str) {
+            issue.state = value.to_string();
+        }
+        if let Some(labels) = body.get("labels").and_then(Value::as_array) {
+            issue.labels = labels.iter().filter_map(Value::as_str).map(String::from).collect();
+        }
+        let response = json!({
+            "id": issue.id,
+            "number": issue.number,
+            "title": issue.title,
+            "body": issue.body,
+            "state": issue.state,
+            "user": { "login": issue.user },
+            "labels": issue.labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()
+        });
+        drop(state);
+        return send(request, 200, Some(response));
+    }
+
+    // Issue comments: GET /repos/{owner}/{repo}/issues/{number}/comments
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "issues" && segments[5] == "comments" && method == "GET" {
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let issue = state.issues.iter().find(|i| i.number == number);
+        let Some(issue) = issue else {
+            drop(state);
+            return send(request, 404, Some(json!({ "message": "Not Found" })));
+        };
+        let comments = state.issue_comments.get(&issue.number).cloned().unwrap_or_default();
+        let arr: Vec<Value> = comments.iter().map(|c| json!({"id": c.id, "body": c.body, "user": {"login": c.user}})).collect();
+        drop(state);
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+
+    // Issue comment create: POST /repos/{owner}/{repo}/issues/{number}/comments
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "issues" && segments[5] == "comments" && method == "POST" {
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let text = body.get("body").and_then(Value::as_str).unwrap_or("").to_string();
+        let mut state = state.lock().expect("fake state poisoned");
+        let issue = state.issues.iter().find(|i| i.number == number).cloned();
+        let Some(_) = issue else {
+            drop(state);
+            return send(request, 404, Some(json!({ "message": "Not Found" })));
+        };
+        let id = state.id();
+        let comment = FakeIssueComment { id, body: text.clone(), user: "octocat".to_string() };
+        state.issue_comments.entry(number).or_default().push(comment);
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "body": text, "user": {"login": "octocat"}})));
     }
 
     // Annotated tag lookup: the toolkit only needs to know it is not there.
