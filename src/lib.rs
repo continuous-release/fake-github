@@ -648,6 +648,27 @@ fn bearer_token(request: &Request) -> Option<String> {
         })
 }
 
+
+fn deliver_webhook(url_str: &str, payload: &Value) {
+    // Best-effort delivery; ignore errors.
+    let Ok(parsed) = Url::parse(url_str) else { return; };
+    let host = parsed.host_str().unwrap_or("").to_string();
+    if host.is_empty() { return; }
+    let port = parsed.port().unwrap_or(80);
+    let path = if parsed.path().is_empty() { "/" } else { parsed.path() };
+    let body = serde_json::to_string(payload).unwrap_or_default();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    use std::io::Write;
+    use std::net::TcpStream;
+    if let Ok(mut stream) = TcpStream::connect((host.as_str(), port)) {
+        let _ = stream.write_all(request.as_bytes());
+        let _ = stream.flush();
+    }
+}
+
 fn handle_request(
     state: &Arc<Mutex<FakeState>>,
     mut request: Request,
@@ -921,9 +942,20 @@ fn handle_request(
                 assets: Vec::new(),
             };
             let response = release_json(&release, base_url);
-            rs.releases.push(release);
-            rs.events.push(json!({"type": "ReleaseEvent", "repo": key, "payload": {"action": "created", "release": {"tag_name": tag}}}));
+            let event = json!({"type": "ReleaseEvent", "repo": key, "payload": {"action": "created", "release": {"tag_name": tag}}});
+            {
+                let rs = state.repos.get_mut(&key).expect("repo exists");
+                rs.releases.push(release);
+                rs.events.push(event.clone());
+            }
+            let hooks: Vec<(String, Vec<String>)> = state.repos.get(&key).map(|r| r.webhooks.iter().map(|h| (h.url.clone(), h.events.clone())).collect()).unwrap_or_default();
             drop(state);
+            for (url, events) in hooks {
+                if events.is_empty() || events.iter().any(|e| e == "release" || e == "*") {
+                    let payload = event.clone();
+                    std::thread::spawn(move || deliver_webhook(&url, &payload));
+                }
+            }
             return send(request, 201, Some(response));
         }
     }
