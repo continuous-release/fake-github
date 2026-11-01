@@ -75,6 +75,21 @@ pub struct IssueComment {
     pub user: String,
 }
 
+/// A pull request in the fake GitHub.
+#[derive(Clone, Debug, Default)]
+pub struct PullRequest {
+    pub number: u64,
+    pub id: u64,
+    pub title: String,
+    pub body: Option<String>,
+    pub state: String,
+    pub user: String,
+    pub head: String,
+    pub base: String,
+    pub draft: bool,
+    pub merged: bool,
+}
+
 #[derive(Clone, Debug)]
 struct FakeAsset {
     id: u64,
@@ -118,6 +133,37 @@ struct FakeIssueComment {
     user: String,
 }
 
+#[derive(Clone, Debug)]
+struct FakePull {
+    id: u64,
+    number: u64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    user: String,
+    head: String,
+    base: String,
+    draft: bool,
+    merged: bool,
+    mergeable: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FakePullComment {
+    id: u64,
+    body: String,
+    user: String,
+    path: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct FakePullReview {
+    id: u64,
+    body: Option<String>,
+    state: String,
+    user: String,
+}
+
 #[derive(Default)]
 struct RepoState {
     tags: HashMap<String, String>,
@@ -127,6 +173,11 @@ struct RepoState {
     issue_comments: HashMap<u64, Vec<FakeIssueComment>>,
     next_issue_number: u64,
     branches: Vec<String>,
+    contents: HashMap<String, Vec<u8>>,
+    pulls: Vec<FakePull>,
+    pull_comments: HashMap<u64, Vec<FakePullComment>>,
+    pull_reviews: HashMap<u64, Vec<FakePullReview>>,
+    next_pull_number: u64,
 }
 
 #[derive(Default)]
@@ -145,9 +196,13 @@ impl FakeState {
     }
 
     fn repo(&mut self, owner: &str, name: &str) -> &mut RepoState {
-        self.repos
+        let rs = self.repos
             .entry((owner.to_string(), name.to_string()))
-            .or_default()
+            .or_default();
+        if rs.branches.is_empty() {
+            rs.branches.push("main".to_string());
+        }
+        rs
     }
 
     fn ensure_repo(&mut self, owner: &str, name: &str) -> (String, String) {
@@ -879,6 +934,203 @@ fn handle_request(
                 "object": { "sha": sha, "type": "commit" },
             })),
         );
+    }
+
+
+    // Branches list
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "branches" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let branches = state.repos.get(&key).map(|rs| rs.branches.clone()).unwrap_or_else(|| vec!["main".to_string()]);
+        drop(state);
+        let arr: Vec<Value> = branches.iter().map(|b| json!({"name": b, "commit": {"sha": "0000000000000000000000000000000000000000"}})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Branch get
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "branches" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let name = &segments[4];
+        let state = state.lock().expect("fake state poisoned");
+        let exists = state.repos.get(&key).map(|rs| rs.branches.iter().any(|b| b == name)).unwrap_or(false) || name == "main";
+        drop(state);
+        if exists {
+            return send(request, 200, Some(json!({"name": name, "commit": {"sha": "0000000000000000000000000000000000000000"}})));
+        } else {
+            return send(request, 404, Some(json!({ "message": "Not Found" })));
+        }
+    }
+
+    // Contents get
+    if segments.len() >= 4 && segments[0] == "repos" && segments[3] == "contents" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let path = segments[4..].join("/");
+        let state = state.lock().expect("fake state poisoned");
+        let content = state.repos.get(&key).and_then(|rs| rs.contents.get(&path).cloned());
+        drop(state);
+        match content {
+            Some(bytes) => {
+                use base64::Engine as _;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                return send(request, 200, Some(json!({
+                    "name": path.rsplit('/').next().unwrap_or(&path),
+                    "path": path,
+                    "sha": "0000000000000000000000000000000000000000",
+                    "type": "file",
+                    "content": encoded,
+                    "encoding": "base64"
+                })));
+            }
+            None => {
+                return send(request, 404, Some(json!({ "message": "Not Found" })));
+            }
+        }
+    }
+    // Contents create/update
+    if segments.len() >= 4 && segments[0] == "repos" && segments[3] == "contents" && (method == "PUT" || method == "POST") {
+        let key = repo_key.clone().unwrap();
+        let path = segments[4..].join("/");
+        let body = parse_json_body(&body)?;
+        let content_b64 = body.get("content").and_then(Value::as_str).unwrap_or("");
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(content_b64).unwrap_or_default();
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.entry(key).or_default();
+        rs.contents.insert(path.clone(), bytes);
+        drop(state);
+        return send(request, 200, Some(json!({"content": {"path": path, "sha": "0000000000000000000000000000000000000000"}})));
+    }
+    // Contents delete
+    if segments.len() >= 4 && segments[0] == "repos" && segments[3] == "contents" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let path = segments[4..].join("/");
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            rs.contents.remove(&path);
+        }
+        drop(state);
+        return send(request, 200, Some(json!({"content": null})));
+    }
+
+    // Pulls list
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "pulls" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let pulls: Vec<Value> = state.repos.get(&key).map(|rs| rs.pulls.iter().map(|p| json!({"id": p.id, "number": p.number, "title": p.title, "body": p.body, "state": p.state, "user": {"login": p.user}, "head": {"ref": p.head}, "base": {"ref": p.base}, "draft": p.draft, "merged": p.merged, "mergeable": p.mergeable})).collect()).unwrap_or_default();
+        drop(state);
+        return send(request, 200, Some(Value::Array(pulls)));
+    }
+    // Pull get
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "pulls" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let pr = state.repos.get(&key).and_then(|rs| rs.pulls.iter().find(|p| p.number == number).cloned());
+        drop(state);
+        match pr {
+            Some(p) => return send(request, 200, Some(json!({"id": p.id, "number": p.number, "title": p.title, "body": p.body, "state": p.state, "user": {"login": p.user}, "head": {"ref": p.head}, "base": {"ref": p.base}, "draft": p.draft, "merged": p.merged, "mergeable": p.mergeable}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Pull create
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "pulls" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let title = body.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+        let pr_body = body.get("body").and_then(Value::as_str).map(|s| s.to_string());
+        let head = body.get("head").and_then(Value::as_str).unwrap_or("").to_string();
+        let base = body.get("base").and_then(Value::as_str).unwrap_or("main").to_string();
+        let draft = body.get("draft").and_then(Value::as_bool).unwrap_or(false);
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.entry(key).or_default();
+        rs.next_pull_number += 1;
+        let number = rs.next_pull_number;
+        let pr = FakePull { id, number, title: title.clone(), body: pr_body.clone(), state: "open".to_string(), user: "octocat".to_string(), head: head.clone(), base: base.clone(), draft, merged: false, mergeable: true };
+        let response = json!({"id": id, "number": number, "title": title, "body": pr_body, "state": "open", "user": {"login": "octocat"}, "head": {"ref": head}, "base": {"ref": base}, "draft": draft, "merged": false, "mergeable": true});
+        rs.pulls.push(pr);
+        drop(state);
+        return send(request, 201, Some(response));
+    }
+    // Pull update
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "pulls" && method == "PATCH" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.get_mut(&key);
+        let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        let Some(pr) = rs.pulls.iter_mut().find(|p| p.number == number) else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        if let Some(t) = body.get("title").and_then(Value::as_str) { pr.title = t.to_string(); }
+        if let Some(b) = body.get("body").and_then(Value::as_str) { pr.body = Some(b.to_string()); }
+        if let Some(st) = body.get("state").and_then(Value::as_str) { pr.state = st.to_string(); }
+        let response = json!({"id": pr.id, "number": pr.number, "title": pr.title, "body": pr.body, "state": pr.state, "user": {"login": pr.user}, "head": {"ref": pr.head}, "base": {"ref": pr.base}, "draft": pr.draft, "merged": pr.merged, "mergeable": pr.mergeable});
+        drop(state);
+        return send(request, 200, Some(response));
+    }
+    // Pull merge
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "pulls" && segments[5] == "merge" && method == "PUT" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.get_mut(&key);
+        let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        let Some(pr) = rs.pulls.iter_mut().find(|p| p.number == number) else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        pr.merged = true;
+        pr.state = "closed".to_string();
+        drop(state);
+        return send(request, 200, Some(json!({"merged": true, "message": "Pull Request successfully merged"})));
+    }
+    // Pull reviews list
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "pulls" && segments[5] == "reviews" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let reviews = state.repos.get(&key).and_then(|rs| rs.pull_reviews.get(&number).cloned()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = reviews.iter().map(|r| json!({"id": r.id, "body": r.body, "state": r.state, "user": {"login": r.user}})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Pull review create
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "pulls" && segments[5] == "reviews" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let state_str = body.get("event").and_then(Value::as_str).unwrap_or("COMMENT").to_string();
+        let review_body = body.get("body").and_then(Value::as_str).map(|s| s.to_string());
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.get_mut(&key);
+        let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        if !rs.pulls.iter().any(|p| p.number == number) { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); }
+        rs.pull_reviews.entry(number).or_default().push(FakePullReview { id, body: review_body.clone(), state: state_str.clone(), user: "octocat".to_string() });
+        drop(state);
+        return send(request, 200, Some(json!({"id": id, "body": review_body, "state": state_str, "user": {"login": "octocat"}})));
+    }
+    // Pull comments list
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "pulls" && segments[5] == "comments" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let comments = state.repos.get(&key).and_then(|rs| rs.pull_comments.get(&number).cloned()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = comments.iter().map(|c| json!({"id": c.id, "body": c.body, "user": {"login": c.user}, "path": c.path})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Pull comment create
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "pulls" && segments[5] == "comments" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let number: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let text = body.get("body").and_then(Value::as_str).unwrap_or("").to_string();
+        let path = body.get("path").and_then(Value::as_str).map(|s| s.to_string());
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.get_mut(&key);
+        let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        if !rs.pulls.iter().any(|p| p.number == number) { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); }
+        rs.pull_comments.entry(number).or_default().push(FakePullComment { id, body: text.clone(), user: "octocat".to_string(), path: path.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "body": text, "user": {"login": "octocat"}, "path": path})));
     }
 
     // Annotated tag lookup: always 404

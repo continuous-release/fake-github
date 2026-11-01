@@ -659,3 +659,165 @@ fn authenticated_user_resolves_from_token() {
     assert_eq!(body["id"], 42);
     fake.stop();
 }
+
+#[test]
+fn list_branches_includes_main() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/repos/o/r/branches")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let branches: Vec<serde_json::Value> = resp.json().unwrap();
+    assert!(branches.iter().any(|b| b["name"] == "main"));
+    fake.stop();
+}
+
+#[test]
+fn get_branch_main() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/repos/o/r/branches/main")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    fake.stop();
+}
+
+#[test]
+fn get_missing_branch_returns_404() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/repos/o/r/branches/nope")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+    fake.stop();
+}
+
+#[test]
+fn contents_round_trip() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"hello");
+    let put = client()
+        .put(format!("{url}/repos/o/r/contents/README.md"))
+        .json(&json!({"content": b64}))
+        .send()
+        .unwrap();
+    assert_eq!(put.status().as_u16(), 200);
+
+    let get = client().get(format!("{url}/repos/o/r/contents/README.md")).send().unwrap();
+    assert_eq!(get.status().as_u16(), 200);
+    let body: serde_json::Value = get.json().unwrap();
+    assert_eq!(body["encoding"], "base64");
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, body["content"].as_str().unwrap().replace('\n', "")).unwrap();
+    assert_eq!(decoded, b"hello");
+    fake.stop();
+}
+
+#[test]
+fn get_missing_content_returns_404() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/repos/o/r/contents/nope.txt")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+    fake.stop();
+}
+
+#[test]
+fn create_and_get_pull() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let created = client()
+        .post(format!("{url}/repos/o/r/pulls"))
+        .json(&json!({"title": "my pr", "body": "desc", "head": "feature", "base": "main"}))
+        .send()
+        .unwrap();
+    assert_eq!(created.status().as_u16(), 201);
+    let pr: serde_json::Value = created.json().unwrap();
+    let number = pr["number"].as_u64().unwrap();
+
+    let got = client().get(format!("{url}/repos/o/r/pulls/{number}")).send().unwrap();
+    assert_eq!(got.status().as_u16(), 200);
+    let got: serde_json::Value = got.json().unwrap();
+    assert_eq!(got["title"], "my pr");
+    assert_eq!(got["head"]["ref"], "feature");
+    fake.stop();
+}
+
+#[test]
+fn list_pulls() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "a", "head": "a", "base": "main"})).send().unwrap();
+    client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "b", "head": "b", "base": "main"})).send().unwrap();
+    let resp = client().get(format!("{url}/repos/o/r/pulls")).send().unwrap();
+    let pulls: Vec<serde_json::Value> = resp.json().unwrap();
+    assert_eq!(pulls.len(), 2);
+    fake.stop();
+}
+
+#[test]
+fn update_pull() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let pr: serde_json::Value = client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "old", "head": "f", "base": "main"})).send().unwrap().json().unwrap();
+    let number = pr["number"].as_u64().unwrap();
+    let updated = client().patch(format!("{url}/repos/o/r/pulls/{number}")).json(&json!({"title": "new", "state": "closed"})).send().unwrap();
+    assert_eq!(updated.status().as_u16(), 200);
+    let got: serde_json::Value = updated.json().unwrap();
+    assert_eq!(got["title"], "new");
+    assert_eq!(got["state"], "closed");
+    fake.stop();
+}
+
+#[test]
+fn merge_pull() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let pr: serde_json::Value = client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "p", "head": "f", "base": "main"})).send().unwrap().json().unwrap();
+    let number = pr["number"].as_u64().unwrap();
+    let merged = client().put(format!("{url}/repos/o/r/pulls/{number}/merge")).send().unwrap();
+    assert_eq!(merged.status().as_u16(), 200);
+    let body: serde_json::Value = merged.json().unwrap();
+    assert_eq!(body["merged"], true);
+    let got = client().get(format!("{url}/repos/o/r/pulls/{number}")).send().unwrap();
+    let got: serde_json::Value = got.json().unwrap();
+    assert_eq!(got["merged"], true);
+    assert_eq!(got["state"], "closed");
+    fake.stop();
+}
+
+#[test]
+fn get_missing_pull_returns_404() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/repos/o/r/pulls/999")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+    fake.stop();
+}
+
+#[test]
+fn create_pull_review() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let pr: serde_json::Value = client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "p", "head": "f", "base": "main"})).send().unwrap().json().unwrap();
+    let number = pr["number"].as_u64().unwrap();
+    let review = client().post(format!("{url}/repos/o/r/pulls/{number}/reviews")).json(&json!({"event": "APPROVE", "body": "lgtm"})).send().unwrap();
+    assert_eq!(review.status().as_u16(), 200);
+    let list = client().get(format!("{url}/repos/o/r/pulls/{number}/reviews")).send().unwrap();
+    let reviews: Vec<serde_json::Value> = list.json().unwrap();
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0]["state"], "APPROVE");
+    fake.stop();
+}
+
+#[test]
+fn create_pull_comment() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let pr: serde_json::Value = client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "p", "head": "f", "base": "main"})).send().unwrap().json().unwrap();
+    let number = pr["number"].as_u64().unwrap();
+    let c = client().post(format!("{url}/repos/o/r/pulls/{number}/comments")).json(&json!({"body": "nit", "path": "src/lib.rs"})).send().unwrap();
+    assert_eq!(c.status().as_u16(), 201);
+    let list = client().get(format!("{url}/repos/o/r/pulls/{number}/comments")).send().unwrap();
+    let comments: Vec<serde_json::Value> = list.json().unwrap();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0]["body"], "nit");
+    fake.stop();
+}

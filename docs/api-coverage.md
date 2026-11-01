@@ -83,6 +83,36 @@ query params and return a sliced page. `Link` headers are not yet emitted.
 | GET | `/repos/{owner}/{repo}/issues/{number}/comments` | Full | 200/404 (issue). |
 | POST | `/repos/{owner}/{repo}/issues/{number}/comments` | Full | 201/404 (issue). |
 
+
+### Branches
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/branches` | Full | |
+| GET | `/repos/{owner}/{repo}/branches/{branch}` | Full | 200/404. |
+
+### Contents
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/contents/{path}` | Full | Returns base64-encoded content. 404 when absent. |
+| PUT/POST | `/repos/{owner}/{repo}/contents/{path}` | Full | Create/update. |
+| DELETE | `/repos/{owner}/{repo}/contents/{path}` | Full | |
+
+### Pull requests
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/pulls` | Full | |
+| GET | `/repos/{owner}/{repo}/pulls/{number}` | Full | 200/404. |
+| POST | `/repos/{owner}/{repo}/pulls` | Full | |
+| PATCH | `/repos/{owner}/{repo}/pulls/{number}` | Full | |
+| PUT | `/repos/{owner}/{repo}/pulls/{number}/merge` | Full | |
+| GET | `/repos/{owner}/{repo}/pulls/{number}/reviews` | Full | |
+| POST | `/repos/{owner}/{repo}/pulls/{number}/reviews` | Full | |
+| GET | `/repos/{owner}/{repo}/pulls/{number}/comments` | Full | |
+| POST | `/repos/{owner}/{repo}/pulls/{number}/comments` | Full | |
+
 ## Not implemented (GitHub REST API surface)
 
 The following domains are **not** implemented. They are listed so callers know
