@@ -113,7 +113,21 @@ query params and return a sliced page. `Link` headers are not yet emitted.
 | GET | `/repos/{owner}/{repo}/pulls/{number}/comments` | Full | |
 | POST | `/repos/{owner}/{repo}/pulls/{number}/comments` | Full | |
 
+## Release-relevant domains added for emulator use
+
+- **GitHub Actions**: workflows list, workflow dispatch, runs list/get/rerun, jobs/artifacts (empty stubs).
+- **Branch protection & rulesets**: get/update/delete protection; repo and org rulesets CRUD.
+- **Merge queue**: get queue, enqueue PR.
+- **Commit statuses & check runs**: create/list statuses, combined status; create/list check runs.
+- **Deployments**: list/create deployments, deployment statuses.
+- **Events**: repo events log (release, issue, PR events recorded).
+- **Environments**: list/create.
+- **Git data**: trees, blobs.
+- **Meta/rate limit/octocat**: basic endpoints.
+- **GraphQL**: `/graphql` stub returning viewer/repository/search shapes.
+
 ## Not implemented (GitHub REST API surface)
+
 
 The following domains are **not** implemented. They are listed so callers know
 what to expect; contributions adding them (with tests) are welcome.
