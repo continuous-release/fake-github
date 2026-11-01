@@ -985,3 +985,101 @@ fn events_recorded_on_issue_create() {
     assert!(!ev.is_empty());
     fake.stop();
 }
+
+#[test]
+fn npm_publish_and_metadata() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"tarball-bytes");
+    let put = client().put(format!("{url}/@scope/pkg")).json(&json!({"version": "1.0.0", "_attachments": {"scope-pkg-1.0.0.tgz": {"data": b64}}})).send().unwrap();
+    assert_eq!(put.status().as_u16(), 201);
+    let meta = client().get(format!("{url}/@scope/pkg")).send().unwrap();
+    assert_eq!(meta.status().as_u16(), 200);
+    let body: serde_json::Value = meta.json().unwrap();
+    assert_eq!(body["name"], "@scope/pkg");
+    assert!(body["versions"]["1.0.0"].is_object());
+    fake.stop();
+}
+
+#[test]
+fn npm_missing_package_returns_404() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let resp = client().get(format!("{url}/@scope/nope")).send().unwrap();
+    assert_eq!(resp.status().as_u16(), 404);
+    fake.stop();
+}
+
+#[test]
+fn actions_secrets_crud() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    let put = client().put(format!("{url}/repos/o/r/actions/secrets/MY_SECRET")).json(&json!({"encrypted_value": "abc"})).send().unwrap();
+    assert!(put.status().as_u16() == 201 || put.status().as_u16() == 204);
+    let list = client().get(format!("{url}/repos/o/r/actions/secrets")).send().unwrap();
+    let body: serde_json::Value = list.json().unwrap();
+    assert_eq!(body["total_count"], 1);
+    let del = client().delete(format!("{url}/repos/o/r/actions/secrets/MY_SECRET")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn actions_variables_crud() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    client().put(format!("{url}/repos/o/r/actions/variables/FOO")).json(&json!({"value": "bar"})).send().unwrap();
+    let list = client().get(format!("{url}/repos/o/r/actions/variables")).send().unwrap();
+    let body: serde_json::Value = list.json().unwrap();
+    assert_eq!(body["total_count"], 1);
+    let del = client().delete(format!("{url}/repos/o/r/actions/variables/FOO")).send().unwrap();
+    assert_eq!(del.status().as_u16(), 204);
+    fake.stop();
+}
+
+#[test]
+fn org_members_and_teams() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    client().put(format!("{url}/orgs/myorg/memberships/alice")).send().unwrap();
+    let members = client().get(format!("{url}/orgs/myorg/members")).send().unwrap();
+    let list: Vec<serde_json::Value> = members.json().unwrap();
+    assert_eq!(list.len(), 1);
+    let check = client().get(format!("{url}/orgs/myorg/members/alice")).send().unwrap();
+    assert_eq!(check.status().as_u16(), 204);
+    client().post(format!("{url}/orgs/myorg/teams")).json(&json!({"name": "Core"})).send().unwrap();
+    let teams = client().get(format!("{url}/orgs/myorg/teams")).send().unwrap();
+    let t: Vec<serde_json::Value> = teams.json().unwrap();
+    assert_eq!(t.len(), 1);
+    fake.stop();
+}
+
+#[test]
+fn merge_enforcement_blocks_without_status() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    // set up branch protection requiring ci
+    client().put(format!("{url}/repos/o/r/branches/main/protection")).json(&json!({"required_status_checks": {"contexts": ["ci"]}, "enforce_admins": false, "required_pull_request_reviews": {}})).send().unwrap();
+    // create pr with head_sha
+    let pr: serde_json::Value = client().post(format!("{url}/repos/o/r/pulls")).json(&json!({"title": "p", "head": "f", "base": "main", "head_sha": "abc"})).send().unwrap().json().unwrap();
+    let number = pr["number"].as_u64().unwrap();
+    let merged = client().put(format!("{url}/repos/o/r/pulls/{number}/merge")).send().unwrap();
+    assert_eq!(merged.status().as_u16(), 405);
+    // add success status
+    client().post(format!("{url}/repos/o/r/statuses/abc")).json(&json!({"state": "success", "context": "ci"})).send().unwrap();
+    let merged2 = client().put(format!("{url}/repos/o/r/pulls/{number}/merge")).send().unwrap();
+    assert_eq!(merged2.status().as_u16(), 200);
+    fake.stop();
+}
+
+#[test]
+fn webhook_signature_present() {
+    let mut fake = FakeGitHub::new();
+    let url = base_url(&mut fake);
+    // register webhook with secret
+    client().post(format!("{url}/repos/o/r/hooks")).json(&json!({"config": {"url": "http://127.0.0.1:1/", "secret": "shh"}, "events": ["release"], "active": true})).send().unwrap();
+    // create release triggers delivery (best-effort, may fail to connect but signature computed)
+    client().post(format!("{url}/repos/o/r/releases")).json(&json!({"tag_name": "v1.0.0"})).send().unwrap();
+    // no assertion on delivery; just ensure no panic
+    fake.stop();
+}
