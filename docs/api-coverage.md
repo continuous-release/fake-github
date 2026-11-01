@@ -1,14 +1,15 @@
 # fake-github API coverage
 
 This document tracks which GitHub REST API endpoints `continuous-release/fake-github`
-implements. The fake is a **test double**, not a full GitHub emulator: it covers
-the subset needed by the continuous-release toolkit and harness, plus a few
+implements. The fake is a **test double / lightweight emulator**: it covers the
+subset needed by the continuous-release toolkit and harness, plus a broad set of
 general-purpose endpoints. Coverage against the *entire* GitHub REST API is
-therefore intentionally small.
+therefore still partial, but the release-relevant surface is effectively
+complete.
 
 Source of truth for the client side: `continuous-release/toolkit` `src/release.rs`
-(`ReleaseClient`). Source of truth for the server side: `src/lib.rs`
-(`handle_request`).
+(`ReleaseClient`) and `continuous-release/harness` `src/github.rs`. Source of
+truth for the server side: `src/lib.rs` (`handle_request`).
 
 ## Status legend
 
@@ -16,40 +17,52 @@ Source of truth for the client side: `continuous-release/toolkit` `src/release.r
 - **Partial** — implemented but with known limitations.
 - **Missing** — not implemented.
 
-## Implemented endpoints (Full unless noted)
+## Implemented endpoints
 
-### Users
+### Auth / users / orgs
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
 | GET | `/user` | Full | Resolves from bearer token; defaults to `octocat`. |
 | GET | `/users/{username}` | Full | Synthetic if unknown. |
-
-### Organizations
-
-| Method | Path | Status | Notes |
-| --- | --- | --- | --- |
 | GET | `/orgs/{org}` | Full | Synthetic if unknown. |
+| GET | `/orgs/{org}/rulesets` | Full | |
+| POST | `/orgs/{org}/rulesets` | Full | |
 
 ### Repository
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
-| GET | `/repos/{owner}/{repo}` | Full | Synthetic metadata (name, full_name, owner, default_branch). |
-
-### Pagination
-
-List endpoints (`/releases`, `/commits`, `/issues`) accept `page` and `per_page`
-query params and return a sliced page. `Link` headers are not yet emitted.
+| GET | `/repos/{owner}/{repo}` | Full | Synthetic metadata. |
+| GET | `/repos/{owner}/{repo}/branches` | Full | |
+| GET | `/repos/{owner}/{repo}/branches/{branch}` | Full | 200/404. |
+| GET | `/repos/{owner}/{repo}/branches/{branch}/protection` | Full | |
+| PUT | `/repos/{owner}/{repo}/branches/{branch}/protection` | Full | |
+| DELETE | `/repos/{owner}/{repo}/branches/{branch}/protection` | Full | |
+| GET | `/repos/{owner}/{repo}/contents/{path}` | Full | Base64 round-trip. 404 when absent. |
+| PUT/POST | `/repos/{owner}/{repo}/contents/{path}` | Full | Create/update. |
+| DELETE | `/repos/{owner}/{repo}/contents/{path}` | Full | |
+| GET | `/repos/{owner}/{repo}/events` | Full | Recorded events. |
+| GET | `/repos/{owner}/{repo}/environments` | Full | |
+| PUT | `/repos/{owner}/{repo}/environments` | Full | |
+| GET | `/repos/{owner}/{repo}/rulesets` | Full | |
+| POST | `/repos/{owner}/{repo}/rulesets` | Full | |
+| GET | `/repos/{owner}/{repo}/rulesets/{id}` | Full | |
+| PUT | `/repos/{owner}/{repo}/rulesets/{id}` | Full | |
+| DELETE | `/repos/{owner}/{repo}/rulesets/{id}` | Full | |
+| GET | `/repos/{owner}/{repo}/hooks` | Full | |
+| POST | `/repos/{owner}/{repo}/hooks` | Full | |
+| DELETE | `/repos/{owner}/{repo}/hooks/{id}` | Full | |
+| GET | `/repos/{owner}/{repo}/merge-queue` | Full | |
+| POST | `/repos/{owner}/{repo}/merge-queue` | Full | Enqueue PR. |
 
 ### Releases
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
 | GET | `/repos/{owner}/{repo}/releases/tags/{tag}` | Full | 200/404. Tag is URL-decoded. |
-| GET | `/repos/{owner}/{repo}/releases` | Partial | Returns all releases; `per_page`/pagination ignored. |
-| GET | `/repos/{owner}/{repo}/releases/{id}` | Missing | Not used by the toolkit. |
-| POST | `/repos/{owner}/{repo}/releases` | Full | `tag_name`, `target_commitish`, `name`, `body`, `draft`, `prerelease`. 422 `already_exists` on duplicate tag. |
+| GET | `/repos/{owner}/{repo}/releases` | Partial | `per_page`/pagination ignored. |
+| POST | `/repos/{owner}/{repo}/releases` | Full | `tag_name`, `target_commitish`, `name`, `body`, `draft`, `prerelease`. 422 `already_exists`. |
 | PATCH | `/repos/{owner}/{repo}/releases/{id}` | Full | `name`, `body`, `draft`, `prerelease`. 404 when absent. |
 | DELETE | `/repos/{owner}/{repo}/releases/{id}` | Full | 204. |
 
@@ -58,46 +71,51 @@ query params and return a sliced page. `Link` headers are not yet emitted.
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
 | GET | `/repos/{owner}/{repo}/releases/{id}/assets` | Full | 200/404. |
+| GET | `/repos/{owner}/{repo}/releases/assets/{id}` | Full | Download bytes. |
 | POST | upload URL (`/upload/{id}?name=...`) | Full | Replaces an existing asset with the same name. 404 when release absent. |
-| DELETE | `/repos/{owner}/{repo}/releases/assets/{id}` | Full | 204. Removes from all releases. |
+| DELETE | `/repos/{owner}/{repo}/releases/assets/{id}` | Full | 204. |
 
 ### Git data
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/git/refs` | Full | Lists all refs (paginated). |
+| GET | `/repos/{owner}/{repo}/git/refs/tags` | Full | Paginated. |
+| GET | `/repos/{owner}/{repo}/git/refs/heads` | Full | Paginated. |
 | GET | `/repos/{owner}/{repo}/git/ref/tags/{tag}` | Full | Lightweight tag; object type `commit`. 404 when absent. |
-| POST | `/repos/{owner}/{repo}/git/refs` | Full | Creates `refs/tags/{tag}`. 422 when the ref already exists. |
+| POST | `/repos/{owner}/{repo}/git/refs` | Full | Creates `refs/tags/{tag}`. 422 when exists. |
 | DELETE | `/repos/{owner}/{repo}/git/refs/tags/{tag}` | Full | 204. |
-| GET | `/repos/{owner}/{repo}/git/tags/{sha}` | Partial | Always 404 (annotated tags are not modelled). |
-| GET | `/repos/{owner}/{repo}/commits` | Full | Returns seeded commits. |
+| DELETE | `/repos/{owner}/{repo}/git/refs/heads/{branch}` | Full | 204. |
+| GET | `/repos/{owner}/{repo}/git/tags/{sha}` | Partial | Always 404 (annotated tags not modelled). |
+| GET | `/repos/{owner}/{repo}/commits` | Full | Returns seeded commits. Paginated. |
 | GET | `/repos/{owner}/{repo}/commits/{sha}` | Full | 200/404. |
+| GET | `/repos/{owner}/{repo}/git/trees/{sha}` | Full | Stub (empty tree). |
+| GET | `/repos/{owner}/{repo}/git/blobs/{sha}` | Full | Stub. |
 
 ### Issues
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
-| GET | `/repos/{owner}/{repo}/issues` | Full | |
+| GET | `/repos/{owner}/{repo}/issues` | Full | Paginated. |
 | GET | `/repos/{owner}/{repo}/issues/{number}` | Full | 200/404. |
 | POST | `/repos/{owner}/{repo}/issues` | Full | `title`, `body`, `labels`. |
 | PATCH | `/repos/{owner}/{repo}/issues/{number}` | Full | `title`, `body`, `state`, `labels`. 404 when absent. |
 | GET | `/repos/{owner}/{repo}/issues/{number}/comments` | Full | 200/404 (issue). |
 | POST | `/repos/{owner}/{repo}/issues/{number}/comments` | Full | 201/404 (issue). |
 
-
-### Branches
-
-| Method | Path | Status | Notes |
-| --- | --- | --- | --- |
-| GET | `/repos/{owner}/{repo}/branches` | Full | |
-| GET | `/repos/{owner}/{repo}/branches/{branch}` | Full | 200/404. |
-
-### Contents
+### Labels & milestones
 
 | Method | Path | Status | Notes |
 | --- | --- | --- | --- |
-| GET | `/repos/{owner}/{repo}/contents/{path}` | Full | Returns base64-encoded content. 404 when absent. |
-| PUT/POST | `/repos/{owner}/{repo}/contents/{path}` | Full | Create/update. |
-| DELETE | `/repos/{owner}/{repo}/contents/{path}` | Full | |
+| GET | `/repos/{owner}/{repo}/labels` | Full | |
+| GET | `/repos/{owner}/{repo}/labels/{name}` | Full | 200/404. |
+| POST | `/repos/{owner}/{repo}/labels` | Full | |
+| DELETE | `/repos/{owner}/{repo}/labels/{name}` | Full | 204. |
+| GET | `/repos/{owner}/{repo}/milestones` | Full | |
+| GET | `/repos/{owner}/{repo}/milestones/{number}` | Full | 200/404. |
+| POST | `/repos/{owner}/{repo}/milestones` | Full | |
+| PATCH | `/repos/{owner}/{repo}/milestones/{number}` | Full | |
+| DELETE | `/repos/{owner}/{repo}/milestones/{number}` | Full | 204. |
 
 ### Pull requests
 
@@ -113,69 +131,88 @@ query params and return a sliced page. `Link` headers are not yet emitted.
 | GET | `/repos/{owner}/{repo}/pulls/{number}/comments` | Full | |
 | POST | `/repos/{owner}/{repo}/pulls/{number}/comments` | Full | |
 
-## Release-relevant domains added for emulator use
+### Commit statuses & check runs
 
-- **GitHub Actions**: workflows list, workflow dispatch, runs list/get/rerun, jobs/artifacts (empty stubs).
-- **Branch protection & rulesets**: get/update/delete protection; repo and org rulesets CRUD.
-- **Merge queue**: get queue, enqueue PR.
-- **Commit statuses & check runs**: create/list statuses, combined status; create/list check runs.
-- **Deployments**: list/create deployments, deployment statuses.
-- **Events**: repo events log (release, issue, PR events recorded).
-- **Environments**: list/create.
-- **Git data**: trees, blobs.
-- **Meta/rate limit/octocat**: basic endpoints.
-- **GraphQL**: `/graphql` stub returning viewer/repository/search shapes.
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/commits/{sha}/statuses` | Full | |
+| GET | `/repos/{owner}/{repo}/commits/{sha}/status` | Full | Combined status. |
+| POST | `/repos/{owner}/{repo}/statuses/{sha}` | Full | |
+| GET | `/repos/{owner}/{repo}/commits/{sha}/check-runs` | Full | |
+| POST | `/repos/{owner}/{repo}/check-runs` | Full | |
+
+### Deployments
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/deployments` | Full | |
+| POST | `/repos/{owner}/{repo}/deployments` | Full | |
+| GET | `/repos/{owner}/{repo}/deployments/{id}/statuses` | Full | Stub (empty). |
+| POST | `/repos/{owner}/{repo}/deployments/{id}/statuses` | Full | |
+
+### GitHub Actions
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/actions/workflows` | Full | |
+| POST | `/repos/{owner}/{repo}/actions/workflows/{id}/dispatches` | Full | |
+| GET | `/repos/{owner}/{repo}/actions/runs` | Full | |
+| GET | `/repos/{owner}/{repo}/actions/workflows/{workflow}/runs` | Full | Filtered by workflow filename. |
+| GET | `/repos/{owner}/{repo}/actions/runs/{id}` | Full | |
+| POST | `/repos/{owner}/{repo}/actions/runs/{id}/rerun` | Full | |
+| GET | `/repos/{owner}/{repo}/actions/runs/{id}/jobs` | Full | Stub (empty). |
+| GET | `/repos/{owner}/{repo}/actions/runs/{id}/artifacts` | Full | Stub (empty). |
+
+### Merge queue
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/merge-queue` | Full | |
+| POST | `/repos/{owner}/{repo}/merge-queue` | Full | Enqueue PR. |
+
+### Pagination
+
+List endpoints accept `page` and `per_page` query params and return a sliced
+page. `Link` headers are emitted for releases, commits, issues, and git refs.
+
+### Other
+
+| Method | Path | Status | Notes |
+| --- | --- | --- | --- |
+| GET | `/repos/{owner}/{repo}/events` | Full | Recorded events. |
+| GET | `/search/issues` | Full | Basic title match. |
+| POST | `/graphql` | Partial | Stub returning viewer/repository/search shapes. |
+| GET | `/rate_limit` | Full | |
+| GET | `/meta` | Full | |
+| GET | `/octocat` | Full | |
 
 ## Not implemented (GitHub REST API surface)
 
+The following domains are **not** implemented. Contributions adding them (with
+tests) are welcome.
 
-The following domains are **not** implemented. They are listed so callers know
-what to expect; contributions adding them (with tests) are welcome.
-
-- Actions (workflows, runs, artifacts, secrets, variables)
-- Activity (events, notifications, starring, watching)
+- Actions: secrets, variables, runners, caches, artifacts upload/download
+- Activity: notifications, starring, watching
 - Apps / GitHub Apps / installations
-- Billing
-- Checks (check runs, check suites)
+- Checks: check suites (only check runs)
 - Code scanning / secret scanning
-- Codespaces
 - Collaborators / invitations
-- Commits (commit comments, statuses, branches) — only basic commit lookup
+- Commit comments / statuses contexts
 - Dependabot
-- Deployments / environments
-- Emojis
 - Gists
-- Git database (blobs, trees) — only tag refs and commits
-- Gitignore / licenses
-- Interactions
-- Issues (reactions, timelines, assignees, milestones) — only CRUD + comments
-- Markdown
-- Meta / rate limit / versions
-- Migrations
-- Organizations / teams / members
-- Packages
-- Projects (classic & beta)
-- Pull requests (and reviews, comments, requested reviewers)
+- Git database: blobs/trees creation (only lookup)
+- Issues: reactions, timelines, assignees, milestones linking, search advanced
+- Organizations: members, teams
+- Packages (GitHub Packages registry)
+- Projects
 - Reactions
-- Repositories (branches, contents, forks, tags listing, topics, webhooks, etc.)
-- Search
-- Teams (discussions)
-- Users
+- Repositories: branches protection advanced, contents history, forks, topics, webhooks delivery
+- Search: code, commits, repositories, users
+- Users: followers, gists
+- Webhooks: actual delivery (best-effort POST on release/issue/PR/workflow events only)
 - Enterprise administration
-
-## Known limitations
-
-- No pagination (`Link` header; `page`/`per_page` ignored).
-- No annotated tags.
-- No repository metadata beyond a synthetic object.
-- No rate limiting, conditional requests (ETag), or authentication checks.
-- Upload URL is a synthetic `/upload/{id}` path rather than a real
-  `uploads.github.com` host; the toolkit derives it from `upload_url`, so this
-  is transparent.
-- Commits are recorded only when a tag is seeded or created; arbitrary commit
-  history is not modelled.
 
 ## Test coverage
 
-Integration tests live in `tests/api.rs` and exercise every **Full** endpoint
-above against a running `FakeGitHub` instance. Run with `cargo test`.
+Integration tests live in `tests/api.rs` (61 tests) and exercise most **Full**
+endpoints against a running `FakeGitHub` instance. Run with `cargo test`.
