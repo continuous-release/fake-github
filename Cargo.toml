@@ -1,0 +1,22 @@
+[package]
+name = "fake-github"
+version = "0.1.0"
+edition = "2021"
+description = "A small in-memory GitHub API server used as a test double for the continuous-release toolkit."
+license = "MIT"
+repository = "https://github.com/continuous-release/fake-github"
+
+[lib]
+name = "fake_github"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fake-github"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+percent-encoding = "2"
+serde_json = "1"
+tiny_http = "0.12"
+url = "2"
