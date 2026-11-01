@@ -192,6 +192,24 @@ struct FakeWebhook {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeCheckRun {
+    id: u64,
+    name: String,
+    head_sha: String,
+    status: String,
+    conclusion: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeDeployment {
+    id: u64,
+    sha: String,
+    ref_name: String,
+    environment: String,
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakePull {
     id: u64,
     number: u64,
@@ -236,6 +254,9 @@ struct RepoState {
     milestones: Vec<FakeMilestone>,
     next_milestone_number: u64,
     commit_statuses: HashMap<String, Vec<FakeCommitStatus>>,
+    check_runs: HashMap<String, Vec<FakeCheckRun>>,
+    deployments: Vec<FakeDeployment>,
+    next_deployment_id: u64,
     webhooks: Vec<FakeWebhook>,
     next_webhook_id: u64,
     pulls: Vec<FakePull>,
@@ -1439,6 +1460,66 @@ fn handle_request(
         }
         drop(state);
         return send(request, 200, Some(json!({"total_count": items.len(), "items": items})));
+    }
+
+
+    // Check runs list: GET /repos/{owner}/{repo}/commits/{sha}/check-runs
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "commits" && segments[5] == "check-runs" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let sha = &segments[4];
+        let state = state.lock().expect("fake state poisoned");
+        let runs = state.repos.get(&key).and_then(|rs| rs.check_runs.get(sha).cloned()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = runs.iter().map(|r| json!({"id": r.id, "name": r.name, "head_sha": r.head_sha, "status": r.status, "conclusion": r.conclusion})).collect();
+        return send(request, 200, Some(json!({"total_count": arr.len(), "check_runs": arr})));
+    }
+    // Create check run: POST /repos/{owner}/{repo}/check-runs
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "check-runs" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let head_sha = body.get("head_sha").and_then(Value::as_str).unwrap_or("").to_string();
+        let status = body.get("status").and_then(Value::as_str).unwrap_or("queued").to_string();
+        let conclusion = body.get("conclusion").and_then(Value::as_str).map(|s| s.to_string());
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.entry(key).or_default();
+        rs.check_runs.entry(head_sha.clone()).or_default().push(FakeCheckRun { id, name: name.clone(), head_sha: head_sha.clone(), status: status.clone(), conclusion: conclusion.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "name": name, "head_sha": head_sha, "status": status, "conclusion": conclusion})));
+    }
+    // Deployments list
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "deployments" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let deps = state.repos.get(&key).map(|rs| rs.deployments.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = deps.iter().map(|d| json!({"id": d.id, "sha": d.sha, "ref": d.ref_name, "environment": d.environment, "description": d.description})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Create deployment
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "deployments" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let sha = body.get("sha").and_then(Value::as_str).unwrap_or("").to_string();
+        let ref_name = body.get("ref").and_then(Value::as_str).unwrap_or("main").to_string();
+        let environment = body.get("environment").and_then(Value::as_str).unwrap_or("production").to_string();
+        let description = body.get("description").and_then(Value::as_str).map(|s| s.to_string());
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.entry(key).or_default();
+        rs.deployments.push(FakeDeployment { id, sha: sha.clone(), ref_name: ref_name.clone(), environment: environment.clone(), description: description.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "sha": sha, "ref": ref_name, "environment": environment, "description": description})));
+    }
+    // Deployment statuses
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "deployments" && segments[5] == "statuses" && method == "GET" {
+        return send(request, 200, Some(Value::Array(vec![])));
+    }
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "deployments" && segments[5] == "statuses" && method == "POST" {
+        let body = parse_json_body(&body)?;
+        let state_str = body.get("state").and_then(Value::as_str).unwrap_or("success").to_string();
+        return send(request, 201, Some(json!({"state": state_str})));
     }
 
     // Annotated tag lookup: always 404
