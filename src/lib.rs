@@ -301,6 +301,7 @@ struct RepoState {
     branch_protection: HashMap<String, FakeBranchProtection>,
     rulesets: Vec<FakeRuleset>,
     merge_queue: Vec<String>,
+    events: Vec<Value>,
     webhooks: Vec<FakeWebhook>,
     next_webhook_id: u64,
     pulls: Vec<FakePull>,
@@ -921,6 +922,7 @@ fn handle_request(
             };
             let response = release_json(&release, base_url);
             rs.releases.push(release);
+            rs.events.push(json!({"type": "ReleaseEvent", "repo": key, "payload": {"action": "created", "release": {"tag_name": tag}}}));
             drop(state);
             return send(request, 201, Some(response));
         }
@@ -1223,6 +1225,7 @@ fn handle_request(
         let pr = FakePull { id, number, title: title.clone(), body: pr_body.clone(), state: "open".to_string(), user: "octocat".to_string(), head: head.clone(), base: base.clone(), draft, merged: false, mergeable: true };
         let response = json!({"id": id, "number": number, "title": title, "body": pr_body, "state": "open", "user": {"login": "octocat"}, "head": {"ref": head}, "base": {"ref": base}, "draft": draft, "merged": false, "mergeable": true});
         rs.pulls.push(pr);
+        rs.events.push(json!({"type": "PullRequestEvent", "payload": {"action": "opened", "pull_request": {"number": number, "title": title}}}));
         drop(state);
         return send(request, 201, Some(response));
     }
@@ -1797,7 +1800,11 @@ fn handle_request(
 
     // Events list (repo)
     if segments.len() == 4 && segments[0] == "repos" && segments[3] == "events" && method == "GET" {
-        return send(request, 200, Some(Value::Array(vec![])));
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let events = state.repos.get(&key).map(|rs| rs.events.clone()).unwrap_or_default();
+        drop(state);
+        return send(request, 200, Some(Value::Array(events)));
     }
     // Org events
     if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "events" && method == "GET" {
@@ -1975,6 +1982,7 @@ fn handle_request(
             "labels": labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()
         });
         rs.issues.push(issue);
+        rs.events.push(json!({"type": "IssuesEvent", "payload": {"action": "opened", "issue": {"number": number, "title": title}}}));
         drop(state);
         return send(request, 201, Some(response));
     }
