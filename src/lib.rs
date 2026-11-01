@@ -192,6 +192,16 @@ struct FakeWebhook {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeRuleset {
+    id: u64,
+    name: String,
+    target: String,
+    enforcement: String,
+    conditions: serde_json::Value,
+    rules: serde_json::Value,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeCheckRun {
     id: u64,
     name: String,
@@ -207,6 +217,34 @@ struct FakeDeployment {
     ref_name: String,
     environment: String,
     description: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeWorkflow {
+    id: u64,
+    name: String,
+    path: String,
+    state: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeWorkflowRun {
+    id: u64,
+    name: String,
+    workflow_id: u64,
+    head_sha: String,
+    head_branch: String,
+    status: String,
+    conclusion: Option<String>,
+    event: String,
+    run_number: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeBranchProtection {
+    required_status_checks: Vec<String>,
+    enforce_admins: bool,
+    required_pull_request_reviews: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -257,6 +295,12 @@ struct RepoState {
     check_runs: HashMap<String, Vec<FakeCheckRun>>,
     deployments: Vec<FakeDeployment>,
     next_deployment_id: u64,
+    workflows: Vec<FakeWorkflow>,
+    workflow_runs: Vec<FakeWorkflowRun>,
+    next_workflow_run_number: u64,
+    branch_protection: HashMap<String, FakeBranchProtection>,
+    rulesets: Vec<FakeRuleset>,
+    merge_queue: Vec<String>,
     webhooks: Vec<FakeWebhook>,
     next_webhook_id: u64,
     pulls: Vec<FakePull>,
@@ -269,6 +313,7 @@ struct RepoState {
 struct FakeState {
     users: HashMap<String, User>,
     orgs: HashMap<String, Organization>,
+    org_rulesets: HashMap<String, Vec<FakeRuleset>>,
     repos: HashMap<String, RepoState>,
     tokens: HashMap<String, String>, // token -> user login
     next_id: u64,
@@ -1520,6 +1565,233 @@ fn handle_request(
         let body = parse_json_body(&body)?;
         let state_str = body.get("state").and_then(Value::as_str).unwrap_or("success").to_string();
         return send(request, 201, Some(json!({"state": state_str})));
+    }
+
+
+    // List workflows
+    if segments.len() == 4 && segments[0] == "repos" && segments[2] == segments[2] && segments[3] == "workflows" && segments[1] == segments[1] && method == "GET" && segments[0] == "repos" {
+        // path: /repos/{owner}/{repo}/actions/workflows actually has 6 segments; handle below
+    }
+    // Actions workflows: GET /repos/{owner}/{repo}/actions/workflows
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "workflows" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let workflows = state.repos.get(&key).map(|rs| rs.workflows.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = workflows.iter().map(|w| json!({"id": w.id, "name": w.name, "path": w.path, "state": w.state})).collect();
+        return send(request, 200, Some(json!({"total_count": arr.len(), "workflows": arr})));
+    }
+    // Workflow dispatch: POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches
+    if segments.len() == 7 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "workflows" && segments[6] == "dispatches" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let workflow_id: u64 = segments[5].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let ref_name = body.get("ref").and_then(Value::as_str).unwrap_or("main").to_string();
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.entry(key).or_default();
+        let run_number = rs.next_workflow_run_number + 1;
+        rs.next_workflow_run_number = run_number;
+        let workflow_name = rs.workflows.iter().find(|w| w.id == workflow_id).map(|w| w.name.clone()).unwrap_or_else(|| "workflow".to_string());
+        rs.workflow_runs.push(FakeWorkflowRun { id, name: workflow_name, workflow_id, head_sha: "0000000000000000000000000000000000000000".to_string(), head_branch: ref_name, status: "queued".to_string(), conclusion: None, event: "workflow_dispatch".to_string(), run_number });
+        drop(state);
+        return send(request, 204, None);
+    }
+    // List workflow runs
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "runs" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let runs = state.repos.get(&key).map(|rs| rs.workflow_runs.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = runs.iter().map(|r| json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number})).collect();
+        return send(request, 200, Some(json!({"total_count": arr.len(), "workflow_runs": arr})));
+    }
+    // Get workflow run
+    if segments.len() == 7 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "runs" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let run_id: u64 = segments[6].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let run = state.repos.get(&key).and_then(|rs| rs.workflow_runs.iter().find(|r| r.id == run_id).cloned());
+        drop(state);
+        match run {
+            Some(r) => return send(request, 200, Some(json!({"id": r.id, "name": r.name, "head_branch": r.head_branch, "status": r.status, "conclusion": r.conclusion, "event": r.event, "run_number": r.run_number}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Rerun workflow run
+    if segments.len() == 8 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "runs" && segments[7] == "rerun" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let run_id: u64 = segments[6].parse().unwrap_or(0);
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            if let Some(run) = rs.workflow_runs.iter_mut().find(|r| r.id == run_id) {
+                run.status = "queued".to_string();
+                run.conclusion = None;
+            }
+        }
+        drop(state);
+        return send(request, 201, None);
+    }
+    // List jobs for a run
+    if segments.len() == 8 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "runs" && segments[6] == "jobs" && method == "GET" {
+        return send(request, 200, Some(json!({"total_count": 0, "jobs": []})));
+    }
+    // List artifacts for a run
+    if segments.len() == 8 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "runs" && segments[6] == "artifacts" && method == "GET" {
+        return send(request, 200, Some(json!({"total_count": 0, "artifacts": []})));
+    }
+
+    // Branch protection get
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "branches" && segments[5] == "protection" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let branch = &segments[4];
+        let state = state.lock().expect("fake state poisoned");
+        let prot = state.repos.get(&key).and_then(|rs| rs.branch_protection.get(branch).cloned());
+        drop(state);
+        match prot {
+            Some(p) => return send(request, 200, Some(json!({"required_status_checks": {"contexts": p.required_status_checks}, "enforce_admins": {"enabled": p.enforce_admins}, "required_pull_request_reviews": {"required_approving_review_count": if p.required_pull_request_reviews {1} else {0}}}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Branch protection update
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "branches" && segments[5] == "protection" && method == "PUT" {
+        let key = repo_key.clone().unwrap();
+        let branch = segments[4].clone();
+        let body = parse_json_body(&body)?;
+        let contexts = body.get("required_status_checks").and_then(|c| c.get("contexts")).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_default();
+        let enforce = body.get("enforce_admins").and_then(Value::as_bool).unwrap_or(false);
+        let pr_reviews = body.get("required_pull_request_reviews").is_some();
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.entry(key).or_default();
+        rs.branch_protection.insert(branch, FakeBranchProtection { required_status_checks: contexts, enforce_admins: enforce, required_pull_request_reviews: pr_reviews });
+        drop(state);
+        return send(request, 200, Some(json!({"ok": true})));
+    }
+    // Branch protection delete
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "branches" && segments[5] == "protection" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let branch = &segments[4];
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            rs.branch_protection.remove(branch);
+        }
+        drop(state);
+        return send(request, 204, None);
+    }
+
+    // Merge queue: GET /repos/{owner}/{repo}/merge-queue
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "merge-queue" && segments[4] == "entries" && method == "GET" {
+        // not standard; skip
+    }
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "merge-queue" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let q = state.repos.get(&key).map(|rs| rs.merge_queue.clone()).unwrap_or_default();
+        drop(state);
+        return send(request, 200, Some(json!({"entries": q})));
+    }
+    // Enqueue PR into merge queue
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "merge-queue" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let pr = body.get("pull_request").and_then(Value::as_str).or_else(|| body.get("pull_request_number").map(|_| "")).unwrap_or("").to_string();
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.entry(key).or_default();
+        if !pr.is_empty() { rs.merge_queue.push(pr); }
+        drop(state);
+        return send(request, 200, Some(json!({"ok": true})));
+    }
+
+
+    // Repo rulesets list: GET /repos/{owner}/{repo}/rulesets
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "rulesets" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let rsets = state.repos.get(&key).map(|rs| rs.rulesets.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = rsets.iter().map(|r| json!({"id": r.id, "name": r.name, "target": r.target, "enforcement": r.enforcement, "conditions": r.conditions, "rules": r.rules})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Repo ruleset create
+    if segments.len() == 4 && segments[0] == "repos" && segments[3] == "rulesets" && method == "POST" {
+        let key = repo_key.clone().unwrap();
+        let body = parse_json_body(&body)?;
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let target = body.get("target").and_then(Value::as_str).unwrap_or("branch").to_string();
+        let enforcement = body.get("enforcement").and_then(Value::as_str).unwrap_or("active").to_string();
+        let conditions = body.get("conditions").cloned().unwrap_or(json!({}));
+        let rules = body.get("rules").cloned().unwrap_or(json!([]));
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        let rs = state.repos.entry(key).or_default();
+        rs.rulesets.push(FakeRuleset { id, name: name.clone(), target: target.clone(), enforcement: enforcement.clone(), conditions: conditions.clone(), rules: rules.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "name": name, "target": target, "enforcement": enforcement, "conditions": conditions, "rules": rules})));
+    }
+    // Repo ruleset get
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "rulesets" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let id: u64 = segments[4].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let rset = state.repos.get(&key).and_then(|rs| rs.rulesets.iter().find(|r| r.id == id).cloned());
+        drop(state);
+        match rset {
+            Some(r) => return send(request, 200, Some(json!({"id": r.id, "name": r.name, "target": r.target, "enforcement": r.enforcement, "conditions": r.conditions, "rules": r.rules}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Repo ruleset update
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "rulesets" && method == "PUT" {
+        let key = repo_key.clone().unwrap();
+        let id: u64 = segments[4].parse().unwrap_or(0);
+        let body = parse_json_body(&body)?;
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.get_mut(&key);
+        let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        let Some(rset) = rs.rulesets.iter_mut().find(|r| r.id == id) else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        if let Some(n) = body.get("name").and_then(Value::as_str) { rset.name = n.to_string(); }
+        if let Some(e) = body.get("enforcement").and_then(Value::as_str) { rset.enforcement = e.to_string(); }
+        if let Some(c) = body.get("conditions") { rset.conditions = c.clone(); }
+        if let Some(r) = body.get("rules") { rset.rules = r.clone(); }
+        let resp = json!({"id": rset.id, "name": rset.name, "target": rset.target, "enforcement": rset.enforcement, "conditions": rset.conditions, "rules": rset.rules});
+        drop(state);
+        return send(request, 200, Some(resp));
+    }
+    // Repo ruleset delete
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "rulesets" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let id: u64 = segments[4].parse().unwrap_or(0);
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) {
+            rs.rulesets.retain(|r| r.id != id);
+        }
+        drop(state);
+        return send(request, 204, None);
+    }
+
+    // Org rulesets list: GET /orgs/{org}/rulesets
+    if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "rulesets" && method == "GET" {
+        let org = &segments[1];
+        let state = state.lock().expect("fake state poisoned");
+        let rsets = state.org_rulesets.get(org).cloned().unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = rsets.iter().map(|r| json!({"id": r.id, "name": r.name, "target": r.target, "enforcement": r.enforcement, "conditions": r.conditions, "rules": r.rules})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Org ruleset create
+    if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "rulesets" && method == "POST" {
+        let org = segments[1].clone();
+        let body = parse_json_body(&body)?;
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let target = body.get("target").and_then(Value::as_str).unwrap_or("branch").to_string();
+        let enforcement = body.get("enforcement").and_then(Value::as_str).unwrap_or("active").to_string();
+        let conditions = body.get("conditions").cloned().unwrap_or(json!({}));
+        let rules = body.get("rules").cloned().unwrap_or(json!([]));
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        state.org_rulesets.entry(org).or_default().push(FakeRuleset { id, name: name.clone(), target: target.clone(), enforcement: enforcement.clone(), conditions: conditions.clone(), rules: rules.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "name": name, "target": target, "enforcement": enforcement, "conditions": conditions, "rules": rules})));
     }
 
     // Annotated tag lookup: always 404
