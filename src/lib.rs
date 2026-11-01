@@ -1851,6 +1851,32 @@ fn handle_request(
         return send(request, 200, Some(json!({"message": "Emulated by fake-github"})));
     }
 
+
+    // GraphQL endpoint
+    if (segments == ["graphql"] && (method == "POST" || method == "GET")) {
+        let body_text = String::from_utf8_lossy(&body).to_string();
+        let query = if method == "POST" {
+            // try to parse JSON body
+            serde_json::from_str::<Value>(&body_text)
+                .ok()
+                .and_then(|v| v.get("query").and_then(Value::as_str).map(|s| s.to_string()))
+                .unwrap_or(body_text.clone())
+        } else {
+            url.query_pairs().find(|(k,_)| k == "query").map(|(_,v)| v.to_string()).unwrap_or_default()
+        };
+        // Minimal handling: return viewer + repository stub
+        let data = if query.contains("viewer") {
+            json!({"viewer": {"login": "octocat", "id": "1"}})
+        } else if query.contains("repository") {
+            json!({"repository": {"name": "r", "owner": {"login": "o"}, "issues": {"totalCount": 0, "nodes": []}, "pullRequests": {"totalCount": 0, "nodes": []}}})
+        } else if query.contains("search") {
+            json!({"search": {"issueCount": 0, "nodes": []}})
+        } else {
+            json!({})
+        };
+        return send(request, 200, Some(json!({"data": data})));
+    }
+
     // Annotated tag lookup: always 404
     if segments.len() == 6
         && segments[0] == "repos"
