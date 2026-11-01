@@ -189,6 +189,22 @@ struct FakeWebhook {
     url: String,
     events: Vec<String>,
     active: bool,
+    secret: Option<String>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NpmPackage {
+    name: String,
+    versions: HashMap<String, String>, // version -> tarball filename
+    tarballs: HashMap<String, Vec<u8>>,
+    latest: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct Team {
+    id: u64,
+    name: String,
+    slug: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -257,6 +273,7 @@ struct FakePull {
     state: String,
     user: String,
     head: String,
+    head_sha: String,
     base: String,
     draft: bool,
     merged: bool,
@@ -303,6 +320,8 @@ struct RepoState {
     rulesets: Vec<FakeRuleset>,
     merge_queue: Vec<String>,
     events: Vec<Value>,
+    secrets: HashMap<String, String>,
+    variables: HashMap<String, String>,
     webhooks: Vec<FakeWebhook>,
     next_webhook_id: u64,
     pulls: Vec<FakePull>,
@@ -316,7 +335,10 @@ struct FakeState {
     users: HashMap<String, User>,
     orgs: HashMap<String, Organization>,
     org_rulesets: HashMap<String, Vec<FakeRuleset>>,
+    org_members: HashMap<String, Vec<String>>,
+    org_teams: HashMap<String, Vec<Team>>,
     repos: HashMap<String, RepoState>,
+    npm_packages: HashMap<String, NpmPackage>,
     tokens: HashMap<String, String>, // token -> user login
     next_id: u64,
 }
@@ -650,7 +672,7 @@ fn bearer_token(request: &Request) -> Option<String> {
 }
 
 
-fn deliver_webhook(url_str: &str, payload: &Value) {
+fn deliver_webhook(url_str: &str, payload: &Value, secret: Option<&str>) {
     // Best-effort delivery; ignore errors.
     let Ok(parsed) = Url::parse(url_str) else { return; };
     let host = parsed.host_str().unwrap_or("").to_string();
@@ -658,10 +680,16 @@ fn deliver_webhook(url_str: &str, payload: &Value) {
     let port = parsed.port().unwrap_or(80);
     let path = if parsed.path().is_empty() { "/" } else { parsed.path() };
     let body = serde_json::to_string(payload).unwrap_or_default();
-    let request = format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
+    let mut headers = format!("POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+    if let Some(secret) = secret {
+        use hmac::{Hmac, Mac};
+        use sha2::Sha256;
+        let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac");
+        mac.update(body.as_bytes());
+        let sig = hex::encode(mac.finalize().into_bytes());
+        headers.push_str(&format!("X-Hub-Signature-256: sha256={sig}\r\n"));
+    }
+    let request = format!("{headers}\r\n{body}");
     use std::io::Write;
     use std::net::TcpStream;
     if let Ok(mut stream) = TcpStream::connect((host.as_str(), port)) {
@@ -691,6 +719,75 @@ fn handle_request(
     request.as_reader().read_to_end(&mut body)?;
 
     let token = bearer_token(&request);
+
+    // --- npm registry (GitHub Packages) ---
+    // Detect npm-style paths: /@scope/name or /name without a known GitHub prefix.
+    let github_prefixes = ["repos", "orgs", "users", "search", "rate_limit", "meta", "octocat", "graphql", "user"];
+    let is_npm = if segments.is_empty() {
+        false
+    } else if segments[0].starts_with('@') {
+        true
+    } else if segments.len() == 1 && !github_prefixes.contains(&segments[0].as_str()) {
+        true
+    } else if segments.len() >= 2 && segments[0].starts_with('@') {
+        true
+    } else {
+        false
+    };
+    if is_npm {
+        let pkg_name = if segments[0].starts_with('@') {
+            if segments.len() >= 2 { format!("{}/{}", segments[0], segments[1]) } else { segments[0].clone() }
+        } else {
+            segments[0].clone()
+        };
+        // tarball download: /{pkg}/-/{file}
+        if segments.len() >= 4 && segments[segments.len()-2] == "-" {
+            let tarball_name = segments.last().cloned().unwrap_or_default();
+            let state = state.lock().expect("fake state poisoned");
+            let bytes = state.npm_packages.get(&pkg_name).and_then(|p| p.tarballs.get(&tarball_name).cloned()).unwrap_or_default();
+            drop(state);
+            let mut resp = Response::from_data(bytes).with_status_code(StatusCode(200));
+            if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..]) { resp = resp.with_header(h); }
+            request.respond(resp)?;
+            return Ok(());
+        }
+        // publish: PUT/POST /{pkg}
+        if (method == "PUT" || method == "POST") && segments.len() <= 2 {
+            let body = parse_json_body(&body)?;
+            let version = body.get("version").and_then(Value::as_str).unwrap_or("1.0.0").to_string();
+            // versions map: version -> tarball filename
+            let tarball_name = format!("{}-{}.tgz", pkg_name.replace('/', "-").replace('@', ""), version);
+            // extract tarball from body if present (versions[pkg][version].dist.tarball content not in body; store body as tarball if binary)
+            let tarball_bytes = body.get("_attachments").and_then(|a| a.get(&tarball_name)).and_then(|t| t.get("data")).and_then(Value::as_str).map(|d| {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD.decode(d).unwrap_or_default()
+            }).unwrap_or_default();
+            let mut state = state.lock().expect("fake state poisoned");
+            let pkg = state.npm_packages.entry(pkg_name.clone()).or_insert_with(|| NpmPackage { name: pkg_name.clone(), versions: HashMap::new(), tarballs: HashMap::new(), latest: version.clone() });
+            pkg.versions.insert(version.clone(), tarball_name.clone());
+            if !tarball_bytes.is_empty() { pkg.tarballs.insert(tarball_name.clone(), tarball_bytes); }
+            pkg.latest = version.clone();
+            drop(state);
+            return send(request, 201, Some(json!({"ok": true})));
+        }
+        // metadata: GET /{pkg}
+        if method == "GET" {
+            let state = state.lock().expect("fake state poisoned");
+            let pkg = state.npm_packages.get(&pkg_name).cloned();
+            drop(state);
+            match pkg {
+                Some(p) => {
+                    let mut versions = serde_json::Map::new();
+                    for (v, t) in &p.versions {
+                        versions.insert(v.clone(), json!({"name": p.name, "version": v, "dist": {"tarball": format!("{}/{}-/{}", base_url, p.name, t)}}));
+                    }
+                    return send(request, 200, Some(json!({"name": p.name, "dist-tags": {"latest": p.latest}, "versions": versions})));
+                }
+                None => return send(request, 404, Some(json!({"error": "not found"}))),
+            }
+        }
+        return send(request, 404, Some(json!({"error": "not found"})));
+    }
 
     // --- Auth / users ---
 
@@ -949,12 +1046,12 @@ fn handle_request(
                 rs.releases.push(release);
                 rs.events.push(event.clone());
             }
-            let hooks: Vec<(String, Vec<String>)> = state.repos.get(&key).map(|r| r.webhooks.iter().map(|h| (h.url.clone(), h.events.clone())).collect()).unwrap_or_default();
+            let hooks: Vec<(String, Vec<String>, Option<String>)> = state.repos.get(&key).map(|r| r.webhooks.iter().map(|h| (h.url.clone(), h.events.clone(), h.secret.clone())).collect()).unwrap_or_default();
             drop(state);
-            for (url, events) in hooks {
+            for (url, events, secret) in hooks {
                 if events.is_empty() || events.iter().any(|e| e == "release" || e == "*") {
                     let payload = event.clone();
-                    std::thread::spawn(move || deliver_webhook(&url, &payload));
+                    std::thread::spawn(move || deliver_webhook(&url, &payload, secret.as_deref()));
                 }
             }
             return send(request, 201, Some(response));
@@ -1252,14 +1349,27 @@ fn handle_request(
         let draft = body.get("draft").and_then(Value::as_bool).unwrap_or(false);
         let mut state = state.lock().expect("fake state poisoned");
         let id = state.id();
-        let rs = state.repos.entry(key).or_default();
+        let rs = state.repos.entry(key.clone()).or_default();
         rs.next_pull_number += 1;
         let number = rs.next_pull_number;
-        let pr = FakePull { id, number, title: title.clone(), body: pr_body.clone(), state: "open".to_string(), user: "octocat".to_string(), head: head.clone(), base: base.clone(), draft, merged: false, mergeable: true };
+        let head_sha = body.get("head_sha").and_then(Value::as_str).unwrap_or("").to_string();
+        let pr = FakePull { id, number, title: title.clone(), body: pr_body.clone(), state: "open".to_string(), user: "octocat".to_string(), head: head.clone(), head_sha, base: base.clone(), draft, merged: false, mergeable: true };
         let response = json!({"id": id, "number": number, "title": title, "body": pr_body, "state": "open", "user": {"login": "octocat"}, "head": {"ref": head}, "base": {"ref": base}, "draft": draft, "merged": false, "mergeable": true});
-        rs.pulls.push(pr);
-        rs.events.push(json!({"type": "PullRequestEvent", "payload": {"action": "opened", "pull_request": {"number": number, "title": title}}}));
+        let event = json!({"type": "PullRequestEvent", "payload": {"action": "opened", "pull_request": {"number": number, "title": title}}});
+        drop(rs);
+        {
+            let rs = state.repos.get_mut(&key).expect("repo exists");
+            rs.pulls.push(pr);
+            rs.events.push(event.clone());
+        }
+        let hooks: Vec<(String, Vec<String>, Option<String>)> = state.repos.get(&key).map(|r| r.webhooks.iter().map(|h| (h.url.clone(), h.events.clone(), h.secret.clone())).collect()).unwrap_or_default();
         drop(state);
+        for (url, events, secret) in hooks {
+            if events.is_empty() || events.iter().any(|e| e == "pull_request" || e == "*") {
+                let payload = event.clone();
+                std::thread::spawn(move || deliver_webhook(&url, &payload, secret.as_deref()));
+            }
+        }
         return send(request, 201, Some(response));
     }
     // Pull update
@@ -1286,6 +1396,22 @@ fn handle_request(
         let rs = state.repos.get_mut(&key);
         let Some(rs) = rs else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
         let Some(pr) = rs.pulls.iter_mut().find(|p| p.number == number) else { drop(state); return send(request, 404, Some(json!({"message":"Not Found"}))); };
+        // Enforce required status checks from branch protection on base branch.
+        let protection = rs.branch_protection.get(&pr.base).cloned();
+        let head_sha = pr.head_sha.clone();
+        if let Some(prot) = protection {
+            if !prot.required_status_checks.is_empty() {
+                let statuses = rs.commit_statuses.get(&head_sha).cloned().unwrap_or_default();
+                for ctx in &prot.required_status_checks {
+                    let ok = statuses.iter().any(|s| s.context == *ctx && s.state == "success");
+                    if !ok {
+                        let pr_number = pr.number;
+                        drop(state);
+                        return send(request, 405, Some(json!({"message": format!("Required status check '{}' is not passing for PR {}", ctx, pr_number)})));
+                    }
+                }
+            }
+        }
         pr.merged = true;
         pr.state = "closed".to_string();
         drop(state);
@@ -1508,10 +1634,11 @@ fn handle_request(
         let url = body.get("config").and_then(|c| c.get("url")).and_then(Value::as_str).unwrap_or("").to_string();
         let events = body.get("events").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect()).unwrap_or_else(|| vec!["push".to_string()]);
         let active = body.get("active").and_then(Value::as_bool).unwrap_or(true);
+        let secret = body.get("config").and_then(|c| c.get("secret")).and_then(Value::as_str).map(|s| s.to_string()).or_else(|| body.get("secret").and_then(Value::as_str).map(|s| s.to_string()));
         let mut state = state.lock().expect("fake state poisoned");
         let id = state.id();
         let rs = state.repos.entry(key).or_default();
-        rs.webhooks.push(FakeWebhook { id, url: url.clone(), events: events.clone(), active });
+        rs.webhooks.push(FakeWebhook { id, url: url.clone(), events: events.clone(), active, secret: secret.clone() });
         drop(state);
         return send(request, 201, Some(json!({"id": id, "config": {"url": url}, "events": events, "active": active})));
     }
@@ -1637,7 +1764,7 @@ fn handle_request(
         for (url, events) in hooks {
             if events.is_empty() || events.iter().any(|e| e == "workflow_run" || e == "*") {
                 let payload = event.clone();
-                std::thread::spawn(move || deliver_webhook(&url, &payload));
+                std::thread::spawn(move || deliver_webhook(&url, &payload, None));
             }
         }
         return send(request, 204, None);
@@ -2025,6 +2152,156 @@ fn handle_request(
         }
     }
 
+
+    // Actions secrets list
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "secrets" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let secrets = state.repos.get(&key).map(|rs| rs.secrets.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+        drop(state);
+        return send(request, 200, Some(json!({"total_count": secrets.len(), "secrets": secrets.iter().map(|s| json!({"name": s})).collect::<Vec<_>>()})));
+    }
+    // Actions secret get
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "secrets" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let name = &segments[5];
+        let state = state.lock().expect("fake state poisoned");
+        let exists = state.repos.get(&key).map(|rs| rs.secrets.contains_key(name)).unwrap_or(false);
+        drop(state);
+        if exists { return send(request, 200, Some(json!({"name": name}))); } else { return send(request, 404, Some(json!({"message": "Not Found"}))); }
+    }
+    // Actions secret set
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "secrets" && (method == "PUT" || method == "PATCH") {
+        let key = repo_key.clone().unwrap();
+        let name = segments[5].clone();
+        let body = parse_json_body(&body)?;
+        let value = body.get("encrypted_value").and_then(Value::as_str).or_else(|| body.get("value").and_then(Value::as_str)).unwrap_or("").to_string();
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.entry(key).or_default();
+        rs.secrets.insert(name, value);
+        drop(state);
+        return send(request, 201, None);
+    }
+    // Actions secret delete
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "secrets" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let name = &segments[5];
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) { rs.secrets.remove(name); }
+        drop(state);
+        return send(request, 204, None);
+    }
+    // Actions variables list
+    if segments.len() == 5 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "variables" && method == "GET" {
+        let key = repo_key.clone().unwrap();
+        let state = state.lock().expect("fake state poisoned");
+        let vars = state.repos.get(&key).map(|rs| rs.variables.clone()).unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = vars.iter().map(|(k,v)| json!({"name": k, "value": v})).collect();
+        return send(request, 200, Some(json!({"total_count": arr.len(), "variables": arr})));
+    }
+    // Actions variable set
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "variables" && (method == "POST" || method == "PATCH" || method == "PUT") {
+        let key = repo_key.clone().unwrap();
+        let name = segments[5].clone();
+        let body = parse_json_body(&body)?;
+        let value = body.get("value").and_then(Value::as_str).unwrap_or("").to_string();
+        let mut state = state.lock().expect("fake state poisoned");
+        let rs = state.repos.entry(key).or_default();
+        rs.variables.insert(name, value);
+        drop(state);
+        return send(request, 201, None);
+    }
+    // Actions variable delete
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "actions" && segments[4] == "variables" && method == "DELETE" {
+        let key = repo_key.clone().unwrap();
+        let name = &segments[5];
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(rs) = state.repos.get_mut(&key) { rs.variables.remove(name); }
+        drop(state);
+        return send(request, 204, None);
+    }
+
+    // Org members
+    if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "members" && method == "GET" {
+        let org = &segments[1];
+        let state = state.lock().expect("fake state poisoned");
+        let members = state.org_members.get(org).cloned().unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = members.iter().map(|m| json!({"login": m})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Org member check
+    if segments.len() == 4 && segments[0] == "orgs" && segments[2] == "members" && method == "GET" {
+        let org = &segments[1];
+        let user = &segments[3];
+        let state = state.lock().expect("fake state poisoned");
+        let is_member = state.org_members.get(org).map(|m| m.contains(user)).unwrap_or(false);
+        drop(state);
+        if is_member { return send(request, 204, None); } else { return send(request, 404, Some(json!({"message": "Not Found"}))); }
+    }
+    // Org member add
+    if segments.len() == 4 && segments[0] == "orgs" && segments[2] == "memberships" && (method == "PUT" || method == "POST") {
+        let org = segments[1].clone();
+        let user = segments[3].clone();
+        let mut state = state.lock().expect("fake state poisoned");
+        state.org_members.entry(org).or_default().push(user.clone());
+        drop(state);
+        return send(request, 200, Some(json!({"role": "member", "state": "active", "user": {"login": user}})));
+    }
+    // Org member remove
+    if segments.len() == 4 && segments[0] == "orgs" && segments[2] == "memberships" && method == "DELETE" {
+        let org = &segments[1];
+        let user = &segments[3];
+        let mut state = state.lock().expect("fake state poisoned");
+        if let Some(members) = state.org_members.get_mut(org) {
+            members.retain(|m| m != user);
+        }
+        drop(state);
+        return send(request, 204, None);
+    }
+    // Org teams list
+    if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "teams" && method == "GET" {
+        let org = &segments[1];
+        let state = state.lock().expect("fake state poisoned");
+        let teams = state.org_teams.get(org).cloned().unwrap_or_default();
+        drop(state);
+        let arr: Vec<Value> = teams.iter().map(|t| json!({"id": t.id, "name": t.name, "slug": t.slug})).collect();
+        return send(request, 200, Some(Value::Array(arr)));
+    }
+    // Org team get
+    if segments.len() == 4 && segments[0] == "orgs" && segments[2] == "teams" && method == "GET" {
+        let org = &segments[1];
+        let slug = &segments[3];
+        let state = state.lock().expect("fake state poisoned");
+        let team = state.org_teams.get(org).and_then(|ts| ts.iter().find(|t| t.slug == *slug).cloned());
+        drop(state);
+        match team {
+            Some(t) => return send(request, 200, Some(json!({"id": t.id, "name": t.name, "slug": t.slug}))),
+            None => return send(request, 404, Some(json!({"message": "Not Found"}))),
+        }
+    }
+    // Org team create
+    if segments.len() == 3 && segments[0] == "orgs" && segments[2] == "teams" && method == "POST" {
+        let org = segments[1].clone();
+        let body = parse_json_body(&body)?;
+        let name = body.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let slug = name.to_lowercase().replace(' ', "-");
+        let mut state = state.lock().expect("fake state poisoned");
+        let id = state.id();
+        state.org_teams.entry(org).or_default().push(Team { id, name: name.clone(), slug: slug.clone() });
+        drop(state);
+        return send(request, 201, Some(json!({"id": id, "name": name, "slug": slug})));
+    }
+    // Team members list
+    if segments.len() == 6 && segments[0] == "orgs" && segments[2] == "teams" && segments[4] == "members" && method == "GET" {
+        // return empty list (membership not tracked per team here)
+        return send(request, 200, Some(Value::Array(vec![])));
+    }
+
+    // GraphQL improvement: handle more fields
+    // (handled in /graphql block above)
+
     // Annotated tag lookup: always 404
     if segments.len() == 6
         && segments[0] == "repos"
@@ -2134,7 +2411,7 @@ fn handle_request(
             .unwrap_or_default();
         let mut state = state.lock().expect("fake state poisoned");
         let id = state.id();
-        let rs = state.repos.entry(key).or_default();
+        let rs = state.repos.entry(key.clone()).or_default();
         rs.next_issue_number += 1;
         let number = rs.next_issue_number;
         let issue = FakeIssue {
@@ -2155,9 +2432,21 @@ fn handle_request(
             "user": { "login": "octocat" },
             "labels": labels.iter().map(|l| json!({"name": l})).collect::<Vec<_>>()
         });
-        rs.issues.push(issue);
-        rs.events.push(json!({"type": "IssuesEvent", "payload": {"action": "opened", "issue": {"number": number, "title": title}}}));
+        drop(rs);
+        let event = json!({"type": "IssuesEvent", "payload": {"action": "opened", "issue": {"number": number, "title": title}}});
+        {
+            let rs = state.repos.get_mut(&key).expect("repo exists");
+            rs.issues.push(issue);
+            rs.events.push(event.clone());
+        }
+        let hooks: Vec<(String, Vec<String>, Option<String>)> = state.repos.get(&key).map(|r| r.webhooks.iter().map(|h| (h.url.clone(), h.events.clone(), h.secret.clone())).collect()).unwrap_or_default();
         drop(state);
+        for (url, events, secret) in hooks {
+            if events.is_empty() || events.iter().any(|e| e == "issues" || e == "*") {
+                let payload = event.clone();
+                std::thread::spawn(move || deliver_webhook(&url, &payload, secret.as_deref()));
+            }
+        }
         return send(request, 201, Some(response));
     }
     // Issue update
