@@ -68,5 +68,5 @@ can be seeded once and reused.
 ```sh
 cargo test
 ```
-12 versions of incremental expansion; 61 integration tests cover the
+12 versions of incremental expansion; 69 integration tests cover the
 implemented endpoints.

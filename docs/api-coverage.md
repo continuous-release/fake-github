@@ -86,7 +86,7 @@ truth for the server side: `src/lib.rs` (`handle_request`).
 | POST | `/repos/{owner}/{repo}/git/refs` | Full | Creates `refs/tags/{tag}`. 422 when exists. |
 | DELETE | `/repos/{owner}/{repo}/git/refs/tags/{tag}` | Full | 204. |
 | DELETE | `/repos/{owner}/{repo}/git/refs/heads/{branch}` | Full | 204. |
-| GET | `/repos/{owner}/{repo}/git/tags/{sha}` | Partial | Always 404 (annotated tags not modelled). |
+| GET | `/repos/{owner}/{repo}/git/tags/{sha}` | Full | Annotated tag objects; peels to the target commit. 404 when absent. |
 | GET | `/repos/{owner}/{repo}/commits` | Full | Returns seeded commits. Paginated. |
 | GET | `/repos/{owner}/{repo}/commits/{sha}` | Full | 200/404. |
 | GET | `/repos/{owner}/{repo}/git/trees/{sha}` | Full | Stub (empty tree). |
@@ -214,5 +214,5 @@ tests) are welcome.
 
 ## Test coverage
 
-Integration tests live in `tests/api.rs` (61 tests) and exercise most **Full**
+Integration tests live in `tests/api.rs` (69 tests) and exercise most **Full**
 endpoints against a running `FakeGitHub` instance. Run with `cargo test`.

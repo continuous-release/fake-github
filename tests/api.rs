@@ -398,6 +398,23 @@ fn annotated_tag_lookup_returns_404() {
 }
 
 #[test]
+fn annotated_tag_lookup_peels_to_commit() {
+    let mut fake = FakeGitHub::new();
+    fake.seed_annotated_tag("v1.2.3", "tag-object", "commit-sha");
+    let url = base_url(&mut fake);
+    let resp = client()
+        .get(format!("{url}/repos/o/r/git/tags/tag-object"))
+        .send()
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    let body: serde_json::Value = resp.json().unwrap();
+    assert_eq!(body["tag"], "v1.2.3");
+    assert_eq!(body["object"]["sha"], "commit-sha");
+    assert_eq!(body["object"]["type"], "commit");
+    fake.stop();
+}
+
+#[test]
 fn url_encoded_tag_round_trips() {
     let mut fake = FakeGitHub::new();
     let tag = "release/1.0.0";

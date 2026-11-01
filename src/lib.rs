@@ -141,6 +141,12 @@ struct FakeCommit {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct FakeAnnotatedTag {
+    tag: String,
+    target: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct FakeIssue {
     id: u64,
     number: u64,
@@ -299,6 +305,8 @@ struct FakePullReview {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct RepoState {
     tags: HashMap<String, String>,
+    #[serde(default)]
+    annotated_tags: HashMap<String, FakeAnnotatedTag>,
     commits: HashMap<String, FakeCommit>,
     releases: Vec<FakeRelease>,
     issues: Vec<FakeIssue>,
@@ -540,6 +548,29 @@ impl FakeGitHub {
             .or_insert_with(|| FakeCommit {
                 sha: sha.to_string(),
                 message: format!("commit {sha}"),
+                parents: Vec::new(),
+            });
+    }
+
+    /// Seed an annotated tag. The tag ref points at `tag_sha`, which in turn
+    /// points at `target_sha`.
+    pub fn seed_annotated_tag(&self, tag: &str, tag_sha: &str, target_sha: &str) {
+        let mut state = self.state.lock().expect("fake state poisoned");
+        let key = format!("{}/{}", self.default_owner, self.default_repo);
+        let rs = state.repos.entry(key).or_default();
+        rs.tags.insert(tag.to_string(), tag_sha.to_string());
+        rs.annotated_tags.insert(
+            tag_sha.to_string(),
+            FakeAnnotatedTag {
+                tag: tag.to_string(),
+                target: target_sha.to_string(),
+            },
+        );
+        rs.commits
+            .entry(target_sha.to_string())
+            .or_insert_with(|| FakeCommit {
+                sha: target_sha.to_string(),
+                message: format!("commit {target_sha}"),
                 parents: Vec::new(),
             });
     }
@@ -1157,15 +1188,54 @@ fn handle_request(
         let key = repo_key.clone().unwrap();
         let tag = &segments[6];
         let state = state.lock().expect("fake state poisoned");
-        let sha = state.repos.get(&key).and_then(|rs| rs.tags.get(tag).cloned());
+        let found = state.repos.get(&key).and_then(|rs| {
+            rs.tags.get(tag).cloned().map(|sha| {
+                let kind = if rs.annotated_tags.contains_key(&sha) {
+                    "tag"
+                } else {
+                    "commit"
+                };
+                (sha, kind)
+            })
+        });
         drop(state);
-        return match sha {
-            Some(sha) => send(
+        return match found {
+            Some((sha, kind)) => send(
                 request,
                 200,
                 Some(json!({
                     "ref": format!("refs/tags/{tag}"),
-                    "object": { "sha": sha, "type": "commit" },
+                    "object": { "sha": sha, "type": kind },
+                })),
+            ),
+            None => send(request, 404, Some(json!({ "message": "Not Found" }))),
+        };
+    }
+
+    // GET /repos/{owner}/{repo}/git/tags/{sha}
+    if segments.len() == 6
+        && segments[0] == "repos"
+        && segments[3] == "git"
+        && segments[4] == "tags"
+        && method == "GET"
+    {
+        let key = repo_key.clone().unwrap();
+        let sha = &segments[5];
+        let state = state.lock().expect("fake state poisoned");
+        let tag = state
+            .repos
+            .get(&key)
+            .and_then(|rs| rs.annotated_tags.get(sha))
+            .cloned();
+        drop(state);
+        return match tag {
+            Some(tag) => send(
+                request,
+                200,
+                Some(json!({
+                    "tag": tag.tag,
+                    "sha": sha,
+                    "object": { "sha": tag.target, "type": "commit" },
                 })),
             ),
             None => send(request, 404, Some(json!({ "message": "Not Found" }))),
@@ -2058,7 +2128,8 @@ fn handle_request(
         let mut refs = Vec::new();
         if let Some(rs) = state.repos.get(&key) {
             for (tag, sha) in &rs.tags {
-                refs.push(json!({"ref": format!("refs/tags/{tag}"), "object": {"sha": sha, "type": "commit"}}));
+                let kind = if rs.annotated_tags.contains_key(sha) { "tag" } else { "commit" };
+                refs.push(json!({"ref": format!("refs/tags/{tag}"), "object": {"sha": sha, "type": kind}}));
             }
             for branch in &rs.branches {
                 refs.push(json!({"ref": format!("refs/heads/{branch}"), "object": {"sha": "0000000000000000000000000000000000000000", "type": "commit"}}));
@@ -2080,7 +2151,8 @@ fn handle_request(
         if let Some(rs) = state.repos.get(&key) {
             if ns == "tags" {
                 for (tag, sha) in &rs.tags {
-                    refs.push(json!({"ref": format!("refs/tags/{tag}"), "object": {"sha": sha, "type": "commit"}}));
+                    let kind = if rs.annotated_tags.contains_key(sha) { "tag" } else { "commit" };
+                    refs.push(json!({"ref": format!("refs/tags/{tag}"), "object": {"sha": sha, "type": kind}}));
                 }
             } else if ns == "heads" {
                 for branch in &rs.branches {
