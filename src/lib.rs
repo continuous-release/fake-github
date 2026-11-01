@@ -1976,6 +1976,37 @@ fn handle_request(
         return send(request, 200, Some(json!({"total_count": runs.len(), "workflow_runs": runs})));
     }
 
+
+    // Asset download: GET /repos/{owner}/{repo}/releases/assets/{id}
+    if segments.len() == 6 && segments[0] == "repos" && segments[3] == "releases" && segments[4] == "assets" && method == "GET" {
+        let asset_id: u64 = segments[5].parse().unwrap_or(0);
+        let state = state.lock().expect("fake state poisoned");
+        let mut found: Option<(String, Vec<u8>)> = None;
+        for rs in state.repos.values() {
+            for rel in &rs.releases {
+                for a in &rel.assets {
+                    if a.id == asset_id {
+                        found = Some((a.name.clone(), a.bytes.clone()));
+                    }
+                }
+            }
+        }
+        drop(state);
+        if let Some((name, bytes)) = found {
+            let mut resp = Response::from_data(bytes).with_status_code(StatusCode(200));
+            if let Ok(h) = Header::from_bytes(&b"Content-Disposition"[..], format!("attachment; filename=\"{name}\"").as_bytes()) {
+                resp = resp.with_header(h);
+            }
+            if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..]) {
+                resp = resp.with_header(h);
+            }
+            request.respond(resp)?;
+            return Ok(());
+        } else {
+            return send(request, 404, Some(json!({"message": "Not Found"})));
+        }
+    }
+
     // Annotated tag lookup: always 404
     if segments.len() == 6
         && segments[0] == "repos"
